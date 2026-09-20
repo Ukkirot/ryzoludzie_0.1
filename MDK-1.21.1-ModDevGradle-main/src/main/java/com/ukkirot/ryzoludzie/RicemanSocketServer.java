@@ -6,6 +6,7 @@ import net.minecraft.server.MinecraftServer;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
+import com.ukkirot.ryzoludzie.bridge.RiceManBridge;
 
 import java.net.InetSocketAddress;
 
@@ -30,31 +31,30 @@ public class RicemanSocketServer extends WebSocketServer {
 
     @Override
     public void onMessage(WebSocket conn, String message) {
-        RyzoludzieMod.LOGGER.info("[Ryzoludzie] Otrzymano komende: {}", message);
+        RyzoludzieMod.LOGGER.info("[Ryzoludzie] Otrzymano komende: {} (watek: {})",
+                message, Thread.currentThread().getName());
 
         JsonObject json;
         try {
             json = JsonParser.parseString(message).getAsJsonObject();
         } catch (Exception e) {
-            conn.send("{\"error\":\"niepoprawny JSON\"}");
+            conn.send("{\"ok\":false,\"error\":\"niepoprawny JSON\"}");
             return;
         }
 
-        String action = json.has("action") ? json.get("action").getAsString() : "";
+        // Stary format {"action":"spawn"} dalej dziala, bo przepisujemy go na "type"
+        if (!json.has("type") && json.has("action")) {
+            json.add("type", json.get("action"));
+        }
 
         // WAZNE: nie wolno dotykac swiata gry z watku WebSocketa!
-        // Trzeba przelaczyc sie na glowny watek serwera przez mcServer.execute(...)
         mcServer.execute(() -> {
-            switch (action) {
-                case "spawn" -> {
-                    RyzoludzieMod.LOGGER.info("[Ryzoludzie] SPAWN - tu docelowo stworzymy RiceManEntity");
-                    conn.send("{\"status\":\"ok\",\"action\":\"spawn\"}");
-                }
-                case "despawn" -> {
-                    RyzoludzieMod.LOGGER.info("[Ryzoludzie] DESPAWN - tu docelowo usuniemy encje");
-                    conn.send("{\"status\":\"ok\",\"action\":\"despawn\"}");
-                }
-                default -> conn.send("{\"error\":\"nieznana akcja: " + action + "\"}");
+            RyzoludzieMod.LOGGER.info("[Ryzoludzie] Wykonanie na watku: {}", Thread.currentThread().getName());
+            JsonObject response = RiceManBridge.handle(mcServer, json);
+            try {
+                conn.send(response.toString());
+            } catch (Exception e) {
+                RyzoludzieMod.LOGGER.warn("[Ryzoludzie] Nie udalo sie wyslac odpowiedzi", e);
             }
         });
     }

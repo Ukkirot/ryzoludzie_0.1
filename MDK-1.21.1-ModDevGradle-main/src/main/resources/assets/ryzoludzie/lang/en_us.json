@@ -9,5 +9,9 @@
   "examplemod.configuration.items": "Item List",
   "examplemod.configuration.logDirtBlock": "Log Dirt Block",
   "examplemod.configuration.magicNumberIntroduction": "Magic Number Text",
-  "examplemod.configuration.magicNumber": "Magic Number"
+  "examplemod.configuration.magicNumber": "Magic Number",
+
+  "entity.ryzoludzie.riceman": "Riceman",
+  "item.ryzoludzie.riceman_spawn_egg": "Riceman Spawn Egg"
+
 }
