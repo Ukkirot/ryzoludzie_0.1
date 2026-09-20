@@ -1,0 +1,1478 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ryżoludzie, centrum dowodzenia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bamboo: #20403a;
+  --bamboo-raised: #2b5049;
+  --bamboo-line: #3d675e;
+  --paddy: #d8e4e2;
+  --straw: #d9a934;
+  --rice: #f2f0e3;
+  --rice-muted: #b9cbc4;
+  --ink: #17302b;
+  --danger: #ff8f7a;
+  --serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --sans: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bamboo);
+  color: var(--rice);
+  font: 400 14px/1.45 var(--sans);
+  font-variant-numeric: tabular-nums;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--straw); outline-offset: 2px; }
+h1, h2, h3, p { margin: 0; }
+
+/* ---------- górny pasek ---------- */
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--bamboo-line);
+}
+.top h1 { font: 700 24px/1 var(--serif); letter-spacing: 0.01em; }
+.conn { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-left: auto; }
+.conn label { color: var(--rice-muted); }
+.conn input {
+  width: 200px;
+  padding: 6px 10px;
+  background: var(--bamboo-raised);
+  border: 1px solid var(--bamboo-line);
+  border-radius: 6px;
+}
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 10px; border: 1px solid var(--bamboo-line); border-radius: 999px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #7f9a94; flex: none; }
+.pill[data-state="on"] .dot { background: #5fd07f; }
+.pill[data-state="connecting"] .dot, .pill[data-state="retry"] .dot { background: var(--straw); }
+#clock { color: var(--rice-muted); min-width: 9ch; }
+
+.btn {
+  padding: 7px 14px;
+  background: var(--bamboo-raised);
+  border: 1px solid var(--bamboo-line);
+  border-radius: 6px;
+  transition: background-color 0.12s;
+}
+.btn:hover:not(:disabled) { background: #356158; }
+.btn:disabled { opacity: 0.45; }
+.btn.primary { background: var(--straw); border-color: var(--straw); color: var(--ink); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: #e6ba48; }
+.btn.small { padding: 4px 10px; }
+
+/* ---------- układ główny ---------- */
+main {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  min-height: 0;
+}
+.panel { padding: 16px; overflow-y: auto; min-height: 0; }
+.panel.units { border-right: 1px solid var(--bamboo-line); }
+.panel.controls { border-left: 1px solid var(--bamboo-line); display: flex; flex-direction: column; gap: 20px; }
+h2 { font: 700 17px/1.2 var(--serif); }
+.panel h2 { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+.count { color: var(--rice-muted); font: 500 14px var(--sans); }
+.empty { color: var(--rice-muted); padding: 8px 0; max-width: 40ch; }
+
+/* ---------- lista jednostek ---------- */
+#unitList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.unit { display: flex; gap: 6px; }
+.unit-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--bamboo-raised);
+  border: 1px solid var(--bamboo-line);
+  border-radius: 8px;
+}
+.unit-main[aria-pressed="true"] { border-color: var(--straw); box-shadow: inset 3px 0 0 var(--straw); background: #33594f; }
+.unit-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.unit-name { font-weight: 600; }
+.badge { display: inline-flex; align-items: center; gap: 6px; color: var(--rice-muted); font-size: 13px; }
+.hp { display: block; height: 5px; background: rgba(0,0,0,0.25); border-radius: 3px; overflow: hidden; }
+.hp-fill { display: block; height: 100%; background: #5fd07f; border-radius: 3px; }
+.hp-fill[data-level="mid"] { background: var(--straw); }
+.hp-fill[data-level="low"] { background: #ef6a53; }
+.unit-meta { color: var(--rice-muted); font-size: 13px; overflow-wrap: anywhere; }
+.unit-locate { align-self: stretch; padding: 0 10px; background: transparent; border: 1px solid var(--bamboo-line); border-radius: 8px; color: var(--rice-muted); }
+.unit-locate:hover { background: var(--bamboo-raised); color: var(--rice); }
+
+/* ---------- mapa ---------- */
+.map { position: relative; min-height: 0; background: var(--paddy); overflow: hidden; }
+#map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#map.grabbing { cursor: grabbing; }
+.map-bar {
+  position: absolute;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(32, 64, 58, 0.93);
+  border-radius: 10px;
+  color: var(--rice);
+}
+.map-bar.tl { top: 12px; left: 12px; right: 152px; }
+.map-bar.tr { top: 12px; right: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--bamboo-line); border-radius: 7px; overflow: hidden; }
+.seg button { padding: 6px 12px; background: transparent; border: 0; border-right: 1px solid var(--bamboo-line); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--straw); color: var(--ink); font-weight: 600; }
+.check { display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; }
+.check input { accent-color: var(--straw); width: 16px; height: 16px; }
+.map-bar .icon-btn { width: 32px; height: 32px; padding: 0; background: transparent; border: 1px solid var(--bamboo-line); border-radius: 7px; font-size: 18px; line-height: 1; }
+.map-bar .icon-btn:hover { background: var(--bamboo-raised); }
+.map-note {
+  position: absolute;
+  left: 50%;
+  top: 76px;
+  transform: translateX(-50%);
+  max-width: min(440px, calc(100% - 32px));
+  padding: 12px 16px;
+  background: rgba(32, 64, 58, 0.93);
+  border-radius: 10px;
+  text-align: center;
+  pointer-events: none;
+}
+.map-note h3 { font: 700 16px/1.25 var(--serif); margin-bottom: 4px; }
+.map-note p { color: var(--rice-muted); }
+.readout {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 4px 10px;
+  background: rgba(32, 64, 58, 0.93);
+  border-radius: 7px;
+  pointer-events: none;
+}
+.map-tip { position: absolute; right: 12px; bottom: 12px; padding: 4px 10px; background: rgba(32, 64, 58, 0.93); border-radius: 7px; color: var(--rice-muted); pointer-events: none; }
+
+/* ---------- panel rozkazów ---------- */
+.section { display: flex; flex-direction: column; gap: 10px; }
+.section + .section { padding-top: 20px; border-top: 1px solid var(--bamboo-line); }
+.section p.hint { color: var(--rice-muted); }
+.section p.warn { color: var(--danger); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > span { color: var(--rice-muted); }
+.field input, .field select {
+  padding: 7px 10px;
+  background: var(--bamboo-raised);
+  border: 1px solid var(--bamboo-line);
+  border-radius: 6px;
+}
+.area-lines p { line-height: 1.5; }
+.area-lines .size { font-weight: 600; font-size: 15px; }
+.area-lines .muted { color: var(--rice-muted); }
+
+/* ---------- dziennik ---------- */
+.log { border-top: 1px solid var(--bamboo-line); padding: 8px 20px 10px; max-height: 150px; overflow-y: auto; }
+.log h2 { font-size: 14px; margin-bottom: 4px; }
+#logList { list-style: none; margin: 0; padding: 0; }
+#logList li { display: flex; gap: 12px; padding: 2px 0 2px 10px; border-left: 3px solid var(--bamboo-line); }
+#logList li.ok { border-left-color: #5fd07f; }
+#logList li.err { border-left-color: #ef6a53; }
+#logList li.err .msg { color: var(--danger); }
+#logList time { color: var(--rice-muted); flex: none; }
+
+/* ---------- mały ekran ---------- */
+@media (max-width: 980px) {
+  html, body { height: auto; }
+  body { min-height: 100%; }
+  main { grid-template-columns: 1fr; }
+  .map { order: -1; height: 65vh; }
+  .panel.units, .panel.controls { border: 0; border-top: 1px solid var(--bamboo-line); overflow: visible; }
+  .map-bar.tl { right: 12px; top: 60px; }
+  .map-bar.tr { top: 12px; }
+  .map-note { top: 130px; }
+  .conn { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Ryżoludzie</h1>
+  <div class="conn">
+    <label for="url">Adres moda</label>
+    <input id="url" type="text" value="ws://localhost:8887" spellcheck="false" autocomplete="off">
+    <button id="connectBtn" class="btn primary" type="button">Połącz</button>
+    <span class="pill" id="status" data-state="off" role="status"><i class="dot"></i><span id="statusText">Rozłączono</span></span>
+    <span id="clock" title="Czas w świecie gry"></span>
+  </div>
+</header>
+
+<main>
+  <aside class="panel units" aria-label="Lista jednostek">
+    <h2>Jednostki <span class="count" id="unitCount">0</span></h2>
+    <ul id="unitList"></ul>
+    <p class="empty" id="unitEmpty">Brak jednostek. Połącz się z modem i postaw ryżoludzia narzędziem „Nowy ryżoludź”.</p>
+  </aside>
+
+  <section class="map" id="mapWrap" aria-label="Mapa z góry">
+    <canvas id="map" aria-label="Mapa z góry: jednostki, gracze i zaznaczony obszar"></canvas>
+
+    <div class="map-bar tl" role="toolbar" aria-label="Narzędzia mapy">
+      <div class="seg">
+        <button type="button" data-tool="select" aria-pressed="true" title="Klik: zaznacz jednostkę. Przeciągnij: zaznacz obszar">Zaznacz</button>
+        <button type="button" data-tool="chunk" aria-pressed="false" title="Klik: zaznacz cały chunk">Chunk</button>
+        <button type="button" data-tool="spawn" aria-pressed="false" title="Klik: postaw nowego ryżoludzia">Nowy ryżoludź</button>
+      </div>
+      <label class="check"><input type="checkbox" id="snap"> Przyciągaj do chunków</label>
+      <label class="check"><input type="checkbox" id="showTerrain" checked> Teren</label>
+    </div>
+    <div class="map-bar tr">
+      <button type="button" class="icon-btn" id="zoomIn" aria-label="Przybliż">+</button>
+      <button type="button" class="icon-btn" id="zoomOut" aria-label="Oddal">−</button>
+      <button type="button" class="btn small" id="recenter">Wyśrodkuj</button>
+    </div>
+
+    <div class="map-note" id="mapNote" hidden><h3 id="mapNoteTitle"></h3><p id="mapNoteText"></p></div>
+    <div class="readout" id="coords">x 0, z 0, chunk 0, 0</div>
+    <div class="map-tip">Prawy przycisk: idź tam. Środkowy albo spacja: przesuwanie. Kółko: zoom.</div>
+  </section>
+
+  <aside class="panel controls" aria-label="Rozkazy">
+    <div class="section">
+      <h2>Zaznaczenie</h2>
+      <p id="selInfo" class="hint">Nie zaznaczono jednostek.</p>
+      <div class="row">
+        <button type="button" class="btn small" id="selectAll">Zaznacz wszystkie</button>
+        <button type="button" class="btn small" id="selectNone">Odznacz</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Obszar pracy</h2>
+      <div id="areaInfo" class="area-lines">
+        <p class="hint" id="areaEmpty">Przeciągnij prostokąt na mapie albo wybierz narzędzie Chunk.</p>
+        <div id="areaFilled" hidden>
+          <p class="size" id="areaSize"></p>
+          <p class="muted" id="areaCoords"></p>
+          <p class="muted" id="areaChunks"></p>
+        </div>
+      </div>
+      <p class="warn" id="areaWarn" hidden></p>
+      <div class="row"><button type="button" class="btn small" id="areaClear" disabled>Wyczyść obszar</button></div>
+    </div>
+
+    <div class="section">
+      <h2>Zbieranie surowców</h2>
+      <label class="field"><span>Co zbierać</span>
+        <select id="what">
+          <option value="all">Drewno i uprawy</option>
+          <option value="logs">Tylko drewno</option>
+          <option value="crops">Tylko uprawy</option>
+        </select>
+      </label>
+      <div class="stack">
+        <label class="check"><input type="checkbox" id="natural" checked> Tnij tylko naturalne drzewa</label>
+        <label class="check"><input type="checkbox" id="fell" checked> Ścinaj całe drzewo</label>
+        <label class="check"><input type="checkbox" id="split" checked> Podziel obszar między jednostki</label>
+      </div>
+      <button type="button" class="btn primary" id="harvestBtn" disabled>Zbieraj w obszarze</button>
+      <p class="hint" id="harvestHint"></p>
+    </div>
+
+    <div class="section">
+      <h2>Inne rozkazy</h2>
+      <button type="button" class="btn" id="gatherBtn" disabled>Zbieraj przedmioty z ziemi</button>
+      <label class="field"><span>Cel ataku</span>
+        <input id="target" type="text" value="nearest:minecraft:zombie" spellcheck="false" autocomplete="off">
+      </label>
+      <p class="hint">Typ encji w formie nearest:minecraft:cow, UUID albo nick gracza.</p>
+      <div class="row">
+        <button type="button" class="btn" id="attackBtn" disabled>Atakuj</button>
+        <button type="button" class="btn" id="stopBtn" disabled>Stop</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer class="log">
+  <h2>Dziennik</h2>
+  <ol id="logList"></ol>
+</footer>
+
+<script>
+(() => {
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  url: $('url'), connectBtn: $('connectBtn'), status: $('status'), statusText: $('statusText'), clock: $('clock'),
+  unitList: $('unitList'), unitEmpty: $('unitEmpty'), unitCount: $('unitCount'),
+  mapWrap: $('mapWrap'), canvas: $('map'), mapNote: $('mapNote'), mapNoteTitle: $('mapNoteTitle'), mapNoteText: $('mapNoteText'),
+  coords: $('coords'), snap: $('snap'), showTerrain: $('showTerrain'),
+  selInfo: $('selInfo'), selectAll: $('selectAll'), selectNone: $('selectNone'),
+  areaEmpty: $('areaEmpty'), areaFilled: $('areaFilled'), areaSize: $('areaSize'), areaCoords: $('areaCoords'),
+  areaChunks: $('areaChunks'), areaWarn: $('areaWarn'), areaClear: $('areaClear'),
+  what: $('what'), natural: $('natural'), fell: $('fell'), split: $('split'),
+  harvestBtn: $('harvestBtn'), harvestHint: $('harvestHint'),
+  gatherBtn: $('gatherBtn'), attackBtn: $('attackBtn'), target: $('target'), stopBtn: $('stopBtn'),
+  zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), recenter: $('recenter'),
+  logList: $('logList'),
+};
+const toolButtons = Array.from(document.querySelectorAll('[data-tool]'));
+
+const CHUNK = 16;
+const MAX_SIDE = 64;
+const MIN_SCALE = 1.5;
+const MAX_SCALE = 48;
+const COLORS = {
+  paddy: '#d8e4e2',
+  gridFine: 'rgba(23, 48, 43, 0.08)',
+  gridChunk: 'rgba(23, 48, 43, 0.30)',
+  axis: 'rgba(196, 140, 20, 0.9)',
+  label: 'rgba(23, 48, 43, 0.9)',
+  ink: '#17302b',
+  halo: '#f9f8ef',
+  straw: '#d9a934',
+  danger: '#d2452f',
+};
+const CMD = {
+  IDLE:    { label: 'czeka',               color: '#7f9a94' },
+  MOVE:    { label: 'idzie',               color: '#3f7fe0' },
+  ATTACK:  { label: 'atakuje',             color: '#d2452f' },
+  GATHER:  { label: 'zbiera przedmioty',   color: '#d08a1f' },
+  HARVEST: { label: 'pracuje w obszarze',  color: '#3aa85c' },
+};
+
+const state = {
+  ws: null,
+  wantConnected: false,
+  reconnectTimer: null,
+  pollTimer: null,
+  pollId: 0,
+  reqId: 0,
+  pending: new Map(),
+  units: new Map(),
+  players: [],
+  gameTime: null,
+  selected: new Set(),
+  area: null,
+  tool: 'select',
+  view: { cx: 0, cz: 0, scale: 6 },
+  drag: null,
+  hoverWorld: null,
+  space: false,
+  centered: false,
+  terrain: new Map(),
+  terrainInFlight: null,
+  terrainTimer: null,
+  terrainId: 0,
+  terrainSupported: true,
+  minY: -64,
+};
+
+/* ------------------------------------------------------------------ zapis ustawień */
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem('ryzoludzie.dashboard') || '{}');
+    if (typeof p.url === 'string' && p.url) els.url.value = p.url;
+    if (typeof p.what === 'string') els.what.value = p.what;
+    for (const k of ['natural', 'fell', 'split', 'snap', 'showTerrain']) {
+      if (typeof p[k] === 'boolean') els[k].checked = p[k];
+    }
+    if (typeof p.target === 'string' && p.target) els.target.value = p.target;
+  } catch (e) { /* localStorage może być niedostępny */ }
+}
+function savePrefs() {
+  try {
+    localStorage.setItem('ryzoludzie.dashboard', JSON.stringify({
+      url: els.url.value.trim(), what: els.what.value, natural: els.natural.checked,
+      fell: els.fell.checked, split: els.split.checked, snap: els.snap.checked, showTerrain: els.showTerrain.checked,
+      target: els.target.value.trim(),
+    }));
+  } catch (e) { /* jw. */ }
+}
+
+/* ------------------------------------------------------------------ dziennik */
+
+function log(kind, text) {
+  const li = document.createElement('li');
+  li.className = kind;
+  const t = document.createElement('time');
+  t.textContent = new Date().toLocaleTimeString('pl-PL');
+  const m = document.createElement('span');
+  m.className = 'msg';
+  m.textContent = (kind === 'err' ? 'Błąd: ' : '') + text;
+  li.append(t, m);
+  els.logList.prepend(li);
+  while (els.logList.children.length > 80) els.logList.lastChild.remove();
+}
+
+/* ------------------------------------------------------------------ połączenie */
+
+function connected() {
+  return !!state.ws && state.ws.readyState === WebSocket.OPEN;
+}
+
+function setStatus(kind) {
+  const labels = { off: 'Rozłączono', connecting: 'Łączenie', on: 'Połączono', retry: 'Brak połączenia, ponawiam' };
+  els.status.dataset.state = kind;
+  els.statusText.textContent = labels[kind];
+  els.connectBtn.textContent = kind === 'off' ? 'Połącz' : 'Rozłącz';
+  updateControls();
+  scheduleDraw();
+}
+
+function connect() {
+  clearTimeout(state.reconnectTimer);
+  if (state.ws) return;
+  const url = els.url.value.trim();
+  savePrefs();
+  state.wantConnected = true;
+
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    state.wantConnected = false;
+    setStatus('off');
+    log('err', 'Nieprawidłowy adres: ' + url + '. Poprawny wygląda tak: ws://localhost:8887');
+    return;
+  }
+  state.ws = ws;
+  setStatus('connecting');
+
+  ws.onopen = () => {
+    state.terrain.clear();
+    state.terrainInFlight = null;
+    state.terrainSupported = true;
+    setStatus('on');
+    log('ok', 'Połączono z ' + url);
+    startPolling();
+  };
+  ws.onmessage = (e) => handleMessage(String(e.data));
+  ws.onerror = () => { /* zaraz przyjdzie onclose */ };
+  ws.onclose = () => {
+    stopPolling();
+    state.ws = null;
+    if (state.wantConnected) {
+      setStatus('retry');
+      state.reconnectTimer = setTimeout(connect, 2000);
+    } else {
+      setStatus('off');
+    }
+  };
+}
+
+function disconnect() {
+  state.wantConnected = false;
+  clearTimeout(state.reconnectTimer);
+  if (state.ws) {
+    state.ws.close();
+  } else {
+    setStatus('off');
+  }
+  log('info', 'Rozłączono');
+}
+
+function startPolling() {
+  stopPolling();
+  requestState();
+  state.pollTimer = setInterval(requestState, 1000);
+  state.terrainTimer = setInterval(terrainTick, 700);
+  terrainTick();
+}
+function stopPolling() {
+  clearInterval(state.pollTimer);
+  state.pollTimer = null;
+  clearInterval(state.terrainTimer);
+  state.terrainTimer = null;
+}
+function requestState() {
+  if (!connected()) return;
+  state.ws.send(JSON.stringify({ type: 'GET_STATE', requestId: 'p' + (++state.pollId) }));
+}
+
+function send(obj, label) {
+  if (!connected()) {
+    log('err', 'Brak połączenia z modem, rozkaz nie został wysłany.');
+    return false;
+  }
+  const requestId = 'c' + (++state.reqId);
+  obj.requestId = requestId;
+  state.pending.set(requestId, label);
+  state.ws.send(JSON.stringify(obj));
+  return true;
+}
+
+function handleMessage(text) {
+  let msg;
+  try {
+    msg = JSON.parse(text);
+  } catch (e) {
+    log('err', 'Mod odesłał niepoprawny JSON: ' + text.slice(0, 120));
+    return;
+  }
+  if (msg && msg.type === 'STATE' && msg.ok !== false) {
+    applyState(msg);
+    return;
+  }
+  if (msg && msg.type === 'TERRAIN' && msg.ok !== false) {
+    applyTerrain(msg);
+    return;
+  }
+  const rid = String((msg && msg.requestId) || '');
+  if (rid.startsWith('t') && msg.ok === false) {
+    state.terrainInFlight = null;
+    if (/unknown command/i.test(String(msg.error))) {
+      state.terrainSupported = false;
+      log('err', 'Mod nie zna komendy GET_TERRAIN. Zbuduj go z nową wersją RiceManBridge, żeby zobaczyć teren.');
+    } else {
+      log('err', 'Teren: ' + (msg.error || 'nieznany błąd'));
+    }
+    return;
+  }
+  const label = state.pending.get(msg.requestId);
+  state.pending.delete(msg.requestId);
+  if (msg.ok) {
+    log('ok', label || msg.type || 'OK');
+    requestState();
+  } else {
+    log('err', (label ? label + ': ' : '') + (msg.error || 'nieznany błąd'));
+  }
+}
+
+function applyState(msg) {
+  const next = new Map();
+  for (const u of msg.units || []) next.set(u.id, u);
+  state.units = next;
+  for (const id of Array.from(state.selected)) {
+    if (!next.has(id)) state.selected.delete(id);
+  }
+  state.players = msg.players || [];
+  state.gameTime = typeof msg.gameTime === 'number' ? msg.gameTime : null;
+  els.clock.textContent = state.gameTime === null ? '' : formatClock(state.gameTime);
+
+  if (!state.centered && (next.size > 0 || state.players.length > 0)) {
+    centerOnEntities();
+    state.centered = true;
+  }
+  renderUnits();
+  updateControls();
+  scheduleDraw();
+}
+
+function formatClock(t) {
+  const day = Math.floor(t / 24000) + 1;
+  const tod = t % 24000;
+  const hours = (Math.floor(tod / 1000) + 6) % 24;
+  const mins = Math.floor((tod % 1000) / 1000 * 60);
+  return 'dzień ' + day + ', ' + String(hours).padStart(2, '0') + ':' + String(mins).padStart(2, '0');
+}
+
+/* ------------------------------------------------------------------ jednostki */
+
+const cards = new Map();
+
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (n === 1) return one;
+  if (m10 >= 2 && m10 <= 4 && !(m100 >= 12 && m100 <= 14)) return few;
+  return many;
+}
+function shortId(id) { return id.slice(0, 4); }
+function unitName(u) { return 'Ryżoludź ' + shortId(u.id); }
+function niceItem(key) { return key.replace(/^[^:]+:/, '').replace(/_/g, ' '); }
+function cmdInfo(name) { return CMD[name] || { label: String(name).toLowerCase(), color: '#7f9a94' }; }
+
+function createCard(u) {
+  const li = document.createElement('li');
+  li.className = 'unit';
+  li.innerHTML =
+    '<button type="button" class="unit-main" aria-pressed="false">' +
+      '<span class="unit-top"><span class="unit-name"></span>' +
+      '<span class="badge"><i class="dot"></i><span class="badge-text"></span></span></span>' +
+      '<span class="hp" role="img"><span class="hp-fill"></span></span>' +
+      '<span class="unit-meta pos"></span>' +
+      '<span class="unit-meta inv"></span>' +
+    '</button>' +
+    '<button type="button" class="unit-locate" aria-label="Pokaż na mapie">Pokaż</button>';
+  const card = {
+    id: u.id,
+    el: li,
+    main: li.querySelector('.unit-main'),
+    name: li.querySelector('.unit-name'),
+    dot: li.querySelector('.dot'),
+    badge: li.querySelector('.badge-text'),
+    hp: li.querySelector('.hp'),
+    hpFill: li.querySelector('.hp-fill'),
+    pos: li.querySelector('.pos'),
+    inv: li.querySelector('.inv'),
+  };
+  card.name.textContent = unitName(u);
+  return card;
+}
+
+function updateCard(card, u) {
+  const info = cmdInfo(u.command);
+  card.dot.style.background = info.color;
+  card.badge.textContent = info.label;
+  const ratio = Math.max(0, Math.min(1, (u.health || 0) / 20));
+  card.hpFill.style.width = (ratio * 100) + '%';
+  card.hpFill.dataset.level = ratio > 0.5 ? 'high' : ratio > 0.25 ? 'mid' : 'low';
+  card.hp.setAttribute('aria-label', 'Zdrowie ' + (u.health || 0) + ' z 20');
+  card.pos.textContent = 'x ' + Math.round(u.x) + ', y ' + Math.round(u.y) + ', z ' + Math.round(u.z);
+  const items = Object.entries(u.inventory || {}).map(([k, v]) => niceItem(k) + ' ' + v);
+  card.inv.textContent = items.length ? items.join(', ') : 'ekwipunek pusty';
+  card.main.setAttribute('aria-pressed', state.selected.has(u.id) ? 'true' : 'false');
+}
+
+function renderUnits() {
+  const ordered = Array.from(state.units.values()).sort((a, b) => a.id.localeCompare(b.id));
+  const seen = new Set();
+  ordered.forEach((u, i) => {
+    seen.add(u.id);
+    let card = cards.get(u.id);
+    if (!card) {
+      card = createCard(u);
+      cards.set(u.id, card);
+    }
+    updateCard(card, u);
+    if (els.unitList.children[i] !== card.el) {
+      els.unitList.insertBefore(card.el, els.unitList.children[i] || null);
+    }
+  });
+  for (const [id, card] of cards) {
+    if (!seen.has(id)) {
+      card.el.remove();
+      cards.delete(id);
+    }
+  }
+  els.unitEmpty.hidden = ordered.length > 0;
+  els.unitCount.textContent = String(ordered.length);
+}
+
+els.unitList.addEventListener('click', (e) => {
+  const li = e.target.closest('.unit');
+  if (!li) return;
+  const id = Array.from(cards.values()).find((c) => c.el === li)?.id;
+  if (!id) return;
+  if (e.target.closest('.unit-locate')) {
+    const u = state.units.get(id);
+    if (u) centerOn(u.x, u.z);
+    return;
+  }
+  toggleSelect(id, e.ctrlKey || e.metaKey || e.shiftKey);
+});
+
+function toggleSelect(id, additive) {
+  if (additive) {
+    if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+  } else {
+    const only = state.selected.size === 1 && state.selected.has(id);
+    state.selected.clear();
+    if (!only) state.selected.add(id);
+  }
+  renderUnits();
+  updateControls();
+  scheduleDraw();
+}
+
+function selectedUnits() {
+  return Array.from(state.selected).map((id) => state.units.get(id)).filter(Boolean);
+}
+
+els.selectAll.addEventListener('click', () => {
+  state.selected = new Set(state.units.keys());
+  renderUnits(); updateControls(); scheduleDraw();
+});
+els.selectNone.addEventListener('click', () => {
+  state.selected.clear();
+  renderUnits(); updateControls(); scheduleDraw();
+});
+
+/* ------------------------------------------------------------------ obszar */
+
+function areaSize(a) { return { w: a.x2 - a.x1 + 1, h: a.z2 - a.z1 + 1 }; }
+function areaValid(a) {
+  const s = areaSize(a);
+  return s.w <= MAX_SIDE && s.h <= MAX_SIDE;
+}
+
+function areaFromPoints(p, q, snap) {
+  let x1 = Math.floor(Math.min(p.x, q.x)), x2 = Math.floor(Math.max(p.x, q.x));
+  let z1 = Math.floor(Math.min(p.z, q.z)), z2 = Math.floor(Math.max(p.z, q.z));
+  if (snap) {
+    x1 = Math.floor(x1 / CHUNK) * CHUNK; x2 = Math.floor(x2 / CHUNK) * CHUNK + CHUNK - 1;
+    z1 = Math.floor(z1 / CHUNK) * CHUNK; z2 = Math.floor(z2 / CHUNK) * CHUNK + CHUNK - 1;
+  }
+  return { x1, z1, x2, z2 };
+}
+
+function setArea(a) {
+  state.area = a;
+  updateAreaInfo();
+  updateControls();
+  scheduleDraw();
+}
+
+function updateAreaInfo() {
+  const a = state.area;
+  els.areaEmpty.hidden = !!a;
+  els.areaFilled.hidden = !a;
+  els.areaClear.disabled = !a;
+  if (!a) {
+    els.areaWarn.hidden = true;
+    return;
+  }
+  const s = areaSize(a);
+  els.areaSize.textContent = s.w + ' × ' + s.h + ' bloków';
+  els.areaCoords.textContent = 'x od ' + a.x1 + ' do ' + a.x2 + ', z od ' + a.z1 + ' do ' + a.z2;
+  els.areaChunks.textContent = 'chunki x ' + Math.floor(a.x1 / CHUNK) + ' do ' + Math.floor(a.x2 / CHUNK)
+    + ', z ' + Math.floor(a.z1 / CHUNK) + ' do ' + Math.floor(a.z2 / CHUNK);
+  if (areaValid(a)) {
+    els.areaWarn.hidden = true;
+  } else {
+    els.areaWarn.hidden = false;
+    els.areaWarn.textContent = 'Obszar jest za duży. Maksymalnie ' + MAX_SIDE + ' × ' + MAX_SIDE + ' bloków (4 × 4 chunki).';
+  }
+}
+
+els.areaClear.addEventListener('click', () => setArea(null));
+
+function splitArea(a, n) {
+  const s = areaSize(a);
+  const alongX = s.w >= s.h;
+  const len = alongX ? s.w : s.h;
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(len * i / n);
+    const to = Math.floor(len * (i + 1) / n) - 1;
+    if (to < from) { parts.push(null); continue; }
+    parts.push(alongX
+      ? { x1: a.x1 + from, x2: a.x1 + to, z1: a.z1, z2: a.z2 }
+      : { z1: a.z1 + from, z2: a.z1 + to, x1: a.x1, x2: a.x2 });
+  }
+  return parts;
+}
+
+/* ------------------------------------------------------------------ rozkazy */
+
+function commandMove(w) {
+  const units = selectedUnits();
+  if (!units.length) {
+    log('info', 'Zaznacz jednostkę, żeby wysłać ją w wybrane miejsce.');
+    return;
+  }
+  const x = Math.floor(w.x), z = Math.floor(w.z);
+  for (const u of units) {
+    send({ type: 'MOVE', unit: u.id, x, z }, unitName(u) + ' idzie do x ' + x + ', z ' + z);
+  }
+}
+
+function spawnAt(w) {
+  const x = Math.floor(w.x), z = Math.floor(w.z);
+  send({ type: 'SPAWN', x, z }, 'Nowy ryżoludź w x ' + x + ', z ' + z);
+}
+
+function sendHarvest() {
+  const units = selectedUnits();
+  if (!units.length || !state.area || !areaValid(state.area)) return;
+  const opts = { what: els.what.value, natural_only: els.natural.checked, fell: els.fell.checked };
+  const parts = (units.length > 1 && els.split.checked)
+    ? splitArea(state.area, units.length)
+    : units.map(() => state.area);
+  units.forEach((u, i) => {
+    const a = parts[i];
+    if (!a) {
+      log('info', unitName(u) + ' nie dostał części obszaru, bo jest za wąski na tyle jednostek.');
+      return;
+    }
+    send(Object.assign({ type: 'HARVEST', unit: u.id, x1: a.x1, z1: a.z1, x2: a.x2, z2: a.z2 }, opts),
+      unitName(u) + ' zbiera w obszarze x ' + a.x1 + ' do ' + a.x2 + ', z ' + a.z1 + ' do ' + a.z2);
+  });
+}
+
+els.harvestBtn.addEventListener('click', sendHarvest);
+els.gatherBtn.addEventListener('click', () => {
+  for (const u of selectedUnits()) send({ type: 'GATHER', unit: u.id }, unitName(u) + ' zbiera przedmioty z ziemi');
+});
+els.attackBtn.addEventListener('click', () => {
+  const target = els.target.value.trim();
+  if (!target) { log('err', 'Wpisz cel ataku.'); return; }
+  savePrefs();
+  for (const u of selectedUnits()) send({ type: 'ATTACK', unit: u.id, target }, unitName(u) + ' atakuje: ' + target);
+});
+els.stopBtn.addEventListener('click', () => {
+  for (const u of selectedUnits()) send({ type: 'STOP', unit: u.id }, unitName(u) + ' stoi');
+});
+
+function updateControls() {
+  const on = connected();
+  const n = state.selected.size;
+  els.selInfo.textContent = n === 0
+    ? 'Nie zaznaczono jednostek.'
+    : 'Zaznaczono ' + n + ' ' + plural(n, 'jednostkę', 'jednostki', 'jednostek') + '.';
+  els.selectAll.disabled = state.units.size === 0;
+  els.selectNone.disabled = n === 0;
+
+  const okArea = !!state.area && areaValid(state.area);
+  els.harvestBtn.disabled = !(on && n > 0 && okArea);
+  els.gatherBtn.disabled = !(on && n > 0);
+  els.attackBtn.disabled = !(on && n > 0);
+  els.stopBtn.disabled = !(on && n > 0);
+
+  let hint = '';
+  if (!on) hint = 'Najpierw połącz się z modem.';
+  else if (n === 0) hint = 'Zaznacz jednostkę na liście albo na mapie.';
+  else if (!state.area) hint = 'Zaznacz obszar na mapie.';
+  else if (!okArea) hint = 'Zmniejsz obszar.';
+  else if (n > 1 && els.split.checked) hint = 'Obszar zostanie podzielony na ' + n + ' ' + plural(n, 'pas', 'pasy', 'pasów') + '.';
+  els.harvestHint.textContent = hint;
+
+  updateMapNote();
+}
+
+function updateMapNote() {
+  let title = '', text = '';
+  if (!connected()) {
+    title = 'Brak połączenia z modem';
+    text = 'Uruchom Minecrafta, wejdź do świata i kliknij Połącz w prawym górnym rogu.';
+  } else if (state.units.size === 0) {
+    title = 'Nie ma jeszcze żadnych ryżoludzi';
+    text = 'Wybierz narzędzie Nowy ryżoludź i kliknij na mapie albo użyj jajka spawnu w grze.';
+  }
+  els.mapNote.hidden = !title;
+  els.mapNoteTitle.textContent = title;
+  els.mapNoteText.textContent = text;
+}
+
+/* ------------------------------------------------------------------ mapa: widok */
+
+const ctx = els.canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1, rafId = 0, hatch = null;
+
+function makeHatch() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 12;
+  const g = c.getContext('2d');
+  g.strokeStyle = 'rgba(217, 169, 52, 0.6)';
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(-2, 14); g.lineTo(14, -2);
+  g.moveTo(-2, 2); g.lineTo(2, -2);
+  g.moveTo(10, 14); g.lineTo(14, 10);
+  g.stroke();
+  return ctx.createPattern(c, 'repeat');
+}
+
+function resize() {
+  const r = els.mapWrap.getBoundingClientRect();
+  W = Math.max(1, Math.floor(r.width));
+  H = Math.max(1, Math.floor(r.height));
+  dpr = window.devicePixelRatio || 1;
+  els.canvas.width = Math.floor(W * dpr);
+  els.canvas.height = Math.floor(H * dpr);
+  hatch = makeHatch();
+  scheduleDraw();
+}
+
+function wx(x) { return (x - state.view.cx) * state.view.scale + W / 2; }
+function wz(z) { return (z - state.view.cz) * state.view.scale + H / 2; }
+function screenToWorld(px, py) {
+  return { x: (px - W / 2) / state.view.scale + state.view.cx, z: (py - H / 2) / state.view.scale + state.view.cz };
+}
+
+function centerOn(x, z) {
+  state.view.cx = x;
+  state.view.cz = z;
+  scheduleDraw();
+}
+
+function centerOnEntities() {
+  const pts = Array.from(state.units.values()).map((u) => [u.x, u.z]);
+  if (!pts.length) state.players.forEach((p) => pts.push([p.x, p.z]));
+  if (!pts.length) return;
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cz = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  state.view.cx = cx;
+  state.view.cz = cz;
+  state.view.scale = 8;
+  scheduleDraw();
+}
+
+function zoomAt(factor, px, py) {
+  const before = screenToWorld(px, py);
+  state.view.scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, state.view.scale * factor));
+  const after = screenToWorld(px, py);
+  state.view.cx += before.x - after.x;
+  state.view.cz += before.z - after.z;
+  scheduleDraw();
+}
+
+els.zoomIn.addEventListener('click', () => zoomAt(1.4, W / 2, H / 2));
+els.zoomOut.addEventListener('click', () => zoomAt(1 / 1.4, W / 2, H / 2));
+els.recenter.addEventListener('click', () => {
+  if (state.units.size || state.players.length) centerOnEntities(); else { centerOn(0, 0); }
+});
+
+/* ------------------------------------------------------------------ teren */
+
+const terrain = state.terrain;
+const TERRAIN_BATCH = 48;
+const TERRAIN_MAX_CACHED = 3000;
+const WATER_SHALLOW = [111, 163, 207];
+const WATER_DEEP = [43, 88, 131];
+const MUTE_TO = [216, 228, 226];
+
+function chunkKey(cx, cz) { return cx + ',' + cz; }
+
+function visibleChunks(margin) {
+  const s = state.view.scale;
+  const x0 = Math.floor((state.view.cx - W / 2 / s) / CHUNK) - margin;
+  const x1 = Math.floor((state.view.cx + W / 2 / s) / CHUNK) + margin;
+  const z0 = Math.floor((state.view.cz - H / 2 / s) / CHUNK) - margin;
+  const z1 = Math.floor((state.view.cz + H / 2 / s) / CHUNK) + margin;
+  const list = [];
+  for (let cx = x0; cx <= x1; cx++) {
+    for (let cz = z0; cz <= z1; cz++) list.push({ cx, cz });
+  }
+  return list;
+}
+
+/** Chunki, w których dzieje się praca: jednostki, ich obszary i zaznaczony obszar. Odświeżamy je częściej. */
+function hotChunks() {
+  const hot = new Set();
+  const addArea = (a) => {
+    for (let cx = Math.floor(a.x1 / CHUNK); cx <= Math.floor(a.x2 / CHUNK); cx++) {
+      for (let cz = Math.floor(a.z1 / CHUNK); cz <= Math.floor(a.z2 / CHUNK); cz++) hot.add(chunkKey(cx, cz));
+    }
+  };
+  for (const u of state.units.values()) {
+    hot.add(chunkKey(Math.floor(u.x / CHUNK), Math.floor(u.z / CHUNK)));
+    if (u.area) addArea(u.area);
+  }
+  if (state.area && areaValid(state.area)) addArea(state.area);
+  return hot;
+}
+
+function terrainTick() {
+  if (!connected() || !state.terrainSupported || !els.showTerrain.checked || !W) return;
+  const now = performance.now();
+  if (state.terrainInFlight) {
+    if (now - state.terrainInFlight.sentAt < 6000) return;
+    state.terrainInFlight = null;
+  }
+  const hot = hotChunks();
+  const ccx = state.view.cx / CHUNK, ccz = state.view.cz / CHUNK;
+  const wanted = [];
+  for (const c of visibleChunks(1)) {
+    const e = terrain.get(chunkKey(c.cx, c.cz));
+    let need = 0;
+    if (!e) {
+      need = 3;
+    } else if (e.missing) {
+      need = now - e.fetchedAt > 15000 ? 2 : 0;
+    } else {
+      const age = now - e.fetchedAt;
+      if (hot.has(chunkKey(c.cx, c.cz))) need = age > 4000 ? 4 : 0;
+      else need = age > 30000 ? 1 : 0;
+    }
+    if (need) wanted.push({ cx: c.cx, cz: c.cz, need, d: (c.cx - ccx) ** 2 + (c.cz - ccz) ** 2 });
+  }
+  if (!wanted.length) return;
+  wanted.sort((a, b) => (b.need - a.need) || (a.d - b.d));
+  const batch = wanted.slice(0, TERRAIN_BATCH);
+  const id = 't' + (++state.terrainId);
+  state.ws.send(JSON.stringify({ type: 'GET_TERRAIN', chunks: batch.map((c) => [c.cx, c.cz]), requestId: id }));
+  state.terrainInFlight = { id, sentAt: now };
+  pruneTerrain();
+}
+
+function pruneTerrain() {
+  if (terrain.size <= TERRAIN_MAX_CACHED) return;
+  const ccx = state.view.cx / CHUNK, ccz = state.view.cz / CHUNK;
+  const far = Array.from(terrain.values())
+    .sort((a, b) => ((b.cx - ccx) ** 2 + (b.cz - ccz) ** 2) - ((a.cx - ccx) ** 2 + (a.cz - ccz) ** 2));
+  for (const e of far) {
+    if (terrain.size <= TERRAIN_MAX_CACHED - 500) break;
+    terrain.delete(chunkKey(e.cx, e.cz));
+  }
+}
+
+function getTerrainEntry(cx, cz) {
+  const k = chunkKey(cx, cz);
+  let e = terrain.get(k);
+  if (!e) {
+    e = { cx, cz, missing: false, fetchedAt: 0, raw: '', rgb: null, h: null, depth: null, canvas: null, ctx: null };
+    terrain.set(k, e);
+  }
+  return e;
+}
+
+function applyTerrain(msg) {
+  state.terrainInFlight = null;
+  if (typeof msg.minY === 'number') state.minY = msg.minY;
+  const now = performance.now();
+  const changed = [];
+
+  for (const c of msg.chunks || []) {
+    let bin;
+    try { bin = atob(c.data); } catch (e) { continue; }
+    if (bin.length !== 256 * 6) continue;
+    const e = getTerrainEntry(c.cx, c.cz);
+    e.fetchedAt = now;
+    e.missing = false;
+    if (e.raw === c.data) continue; // nic się nie zmieniło
+    e.raw = c.data;
+    if (!e.rgb) {
+      e.rgb = new Uint8Array(256 * 3);
+      e.h = new Int16Array(256);
+      e.depth = new Uint8Array(256);
+      e.canvas = document.createElement('canvas');
+      e.canvas.width = 16;
+      e.canvas.height = 16;
+      e.ctx = e.canvas.getContext('2d');
+    }
+    for (let i = 0; i < 256; i++) {
+      const o = i * 6;
+      e.rgb[i * 3] = bin.charCodeAt(o);
+      e.rgb[i * 3 + 1] = bin.charCodeAt(o + 1);
+      e.rgb[i * 3 + 2] = bin.charCodeAt(o + 2);
+      e.h[i] = (bin.charCodeAt(o + 3) << 8) | bin.charCodeAt(o + 4);
+      e.depth[i] = bin.charCodeAt(o + 5);
+    }
+    changed.push(e);
+  }
+  for (const m of msg.missing || []) {
+    const e = getTerrainEntry(m[0], m[1]);
+    e.fetchedAt = now;
+    if (!e.rgb) e.missing = true; // chunk, który mieliśmy, zostawiamy z ostatnim obrazem
+  }
+
+  // Cieniowanie zależy od sąsiadów na północy i zachodzie, więc odświeżamy też chunki na wschodzie i południu.
+  const toRender = new Set();
+  for (const e of changed) {
+    toRender.add(e);
+    const east = terrain.get(chunkKey(e.cx + 1, e.cz));
+    const south = terrain.get(chunkKey(e.cx, e.cz + 1));
+    if (east && east.canvas) toRender.add(east);
+    if (south && south.canvas) toRender.add(south);
+  }
+  for (const e of toRender) renderChunk(e);
+  scheduleDraw();
+}
+
+function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+function renderChunk(e) {
+  const img = e.ctx.createImageData(16, 16);
+  const d = img.data;
+  const north = terrain.get(chunkKey(e.cx, e.cz - 1));
+  const west = terrain.get(chunkKey(e.cx - 1, e.cz));
+  for (let z = 0; z < 16; z++) {
+    for (let x = 0; x < 16; x++) {
+      const i = z * 16 + x;
+      const h = e.h[i];
+      const hN = z > 0 ? e.h[i - 16] : (north && north.h ? north.h[15 * 16 + x] : h);
+      const hW = x > 0 ? e.h[i - 1] : (west && west.h ? west.h[z * 16 + 15] : h);
+      let r, g, b;
+      if (e.depth[i] > 0) {
+        const t = Math.min(e.depth[i] / 16, 1);
+        r = WATER_SHALLOW[0] + (WATER_DEEP[0] - WATER_SHALLOW[0]) * t;
+        g = WATER_SHALLOW[1] + (WATER_DEEP[1] - WATER_SHALLOW[1]) * t;
+        b = WATER_SHALLOW[2] + (WATER_DEEP[2] - WATER_SHALLOW[2]) * t;
+      } else {
+        // Światło z północnego zachodu: zbocze wyższe niż sąsiedzi z N i W jest jaśniejsze.
+        const light = 1 + Math.max(-0.4, Math.min(0.35, (h - hN) * 0.10 + (h - hW) * 0.06));
+        r = (e.rgb[i * 3] * 0.88 + MUTE_TO[0] * 0.12) * light;
+        g = (e.rgb[i * 3 + 1] * 0.88 + MUTE_TO[1] * 0.12) * light;
+        b = (e.rgb[i * 3 + 2] * 0.88 + MUTE_TO[2] * 0.12) * light;
+      }
+      const o = i * 4;
+      d[o] = clamp255(r);
+      d[o + 1] = clamp255(g);
+      d[o + 2] = clamp255(b);
+      d[o + 3] = 255;
+    }
+  }
+  e.ctx.putImageData(img, 0, 0);
+}
+
+function drawTerrain() {
+  if (!els.showTerrain.checked) return;
+  ctx.imageSmoothingEnabled = false;
+  for (const c of visibleChunks(0)) {
+    const e = terrain.get(chunkKey(c.cx, c.cz));
+    if (!e || !e.canvas) continue;
+    const x0 = Math.floor(wx(c.cx * CHUNK)), y0 = Math.floor(wz(c.cz * CHUNK));
+    const x1 = Math.ceil(wx(c.cx * CHUNK + CHUNK)), y1 = Math.ceil(wz(c.cz * CHUNK + CHUNK));
+    ctx.drawImage(e.canvas, x0, y0, x1 - x0, y1 - y0);
+  }
+}
+
+function terrainAt(bx, bz) {
+  const cx = Math.floor(bx / CHUNK), cz = Math.floor(bz / CHUNK);
+  const e = terrain.get(chunkKey(cx, cz));
+  if (!e || !e.h) return null;
+  const i = (bz - cz * CHUNK) * CHUNK + (bx - cx * CHUNK);
+  return { y: e.h[i] + state.minY, water: e.depth[i] > 0 };
+}
+
+/* ------------------------------------------------------------------ mapa: rysowanie */
+
+function scheduleDraw() {
+  if (!rafId) rafId = requestAnimationFrame(() => { rafId = 0; draw(); });
+}
+
+function haloText(text, x, y) {
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = 'rgba(249, 248, 239, 0.9)';
+  ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
+}
+
+function drawGrid() {
+  const s = state.view.scale;
+  const left = state.view.cx - W / 2 / s, right = state.view.cx + W / 2 / s;
+  const top = state.view.cz - H / 2 / s, bottom = state.view.cz + H / 2 / s;
+
+  if (s >= 12) {
+    ctx.strokeStyle = COLORS.gridFine;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = Math.floor(left); x <= right; x++) { const sx = Math.round(wx(x)) + 0.5; ctx.moveTo(sx, 0); ctx.lineTo(sx, H); }
+    for (let z = Math.floor(top); z <= bottom; z++) { const sy = Math.round(wz(z)) + 0.5; ctx.moveTo(0, sy); ctx.lineTo(W, sy); }
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = COLORS.gridChunk;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = Math.floor(left / CHUNK) * CHUNK; x <= right; x += CHUNK) { const sx = Math.round(wx(x)) + 0.5; ctx.moveTo(sx, 0); ctx.lineTo(sx, H); }
+  for (let z = Math.floor(top / CHUNK) * CHUNK; z <= bottom; z += CHUNK) { const sy = Math.round(wz(z)) + 0.5; ctx.moveTo(0, sy); ctx.lineTo(W, sy); }
+  ctx.stroke();
+
+  // osie świata (x = 0 i z = 0)
+  ctx.strokeStyle = COLORS.axis;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (left <= 0 && right >= 0) { const sx = Math.round(wx(0)); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); }
+  if (top <= 0 && bottom >= 0) { const sy = Math.round(wz(0)); ctx.moveTo(0, sy); ctx.lineTo(W, sy); }
+  ctx.stroke();
+
+  // podpisy przy liniach chunków, rzadziej przy małym zoomie
+  let step = 1;
+  while (step * CHUNK * s < 84) step *= 2;
+  ctx.fillStyle = COLORS.label;
+  ctx.font = '12px "Instrument Sans", "Segoe UI", system-ui, sans-serif';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  for (let ci = Math.floor(left / CHUNK / step) * step; ci * CHUNK <= right; ci += step) {
+    haloText(String(ci * CHUNK), wx(ci * CHUNK) + 4, H - 20);
+  }
+  ctx.textBaseline = 'middle';
+  for (let ci = Math.floor(top / CHUNK / step) * step; ci * CHUNK <= bottom; ci += step) {
+    haloText(String(ci * CHUNK), 6, wz(ci * CHUNK) + 10);
+  }
+}
+
+function drawArea(a, preview) {
+  const s = state.view.scale;
+  const x = wx(a.x1), y = wz(a.z1);
+  const w = (a.x2 - a.x1 + 1) * s, h = (a.z2 - a.z1 + 1) * s;
+  const valid = areaValid(a);
+  ctx.save();
+  ctx.globalAlpha = preview ? 0.75 : 1;
+  ctx.fillStyle = valid ? hatch : 'rgba(210, 69, 47, 0.18)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = valid ? COLORS.straw : COLORS.danger;
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(x + 1.25, y + 1.25, w - 2.5, h - 2.5);
+  const sz = areaSize(a);
+  const text = sz.w + ' × ' + sz.h + (valid ? '' : ' (za duży)');
+  ctx.font = '600 13px "Instrument Sans", "Segoe UI", system-ui, sans-serif';
+  const tw = ctx.measureText(text).width + 14;
+  if (w > tw + 8 && h > 30) {
+    ctx.fillStyle = valid ? COLORS.ink : COLORS.danger;
+    ctx.fillRect(x + 8, y + 8, tw, 22);
+    ctx.fillStyle = '#f2f0e3';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText(text, x + 15, y + 19.5);
+  }
+  ctx.restore();
+}
+
+function drawUnitAreas() {
+  const s = state.view.scale;
+  for (const u of state.units.values()) {
+    if (u.command !== 'HARVEST' || !u.area) continue;
+    const x = wx(u.area.x1), y = wz(u.area.z1);
+    const w = (u.area.x2 - u.area.x1 + 1) * s, h = (u.area.z2 - u.area.z1 + 1) * s;
+    const c = cmdInfo(u.command).color;
+    ctx.save();
+    ctx.fillStyle = c;
+    ctx.globalAlpha = 0.1;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    ctx.restore();
+  }
+}
+
+function drawGrain(x, y, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.5);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 6.5, 10, 0, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = COLORS.ink;
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = COLORS.halo;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawEntities() {
+  ctx.font = '600 12px "Instrument Sans", "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+
+  for (const p of state.players) {
+    const x = wx(p.x), y = wz(p.z);
+    if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, -8); ctx.lineTo(7, 0); ctx.lineTo(0, 8); ctx.lineTo(-7, 0); ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = COLORS.ink;
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = COLORS.ink;
+    haloText(p.name, x, y + 11);
+  }
+
+  for (const u of state.units.values()) {
+    const x = wx(u.x), y = wz(u.z);
+    if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
+    if (state.selected.has(u.id)) {
+      ctx.beginPath();
+      ctx.arc(x, y, 16, 0, Math.PI * 2);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = COLORS.straw;
+      ctx.stroke();
+    }
+    drawGrain(x, y, cmdInfo(u.command).color);
+    ctx.fillStyle = COLORS.ink;
+    haloText(shortId(u.id), x, y + 17);
+  }
+}
+
+function draw() {
+  if (!W) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = COLORS.paddy;
+  ctx.fillRect(0, 0, W, H);
+  drawTerrain();
+  drawGrid();
+
+  if (state.tool === 'chunk' && state.hoverWorld && !state.drag) {
+    const cx = Math.floor(state.hoverWorld.x / CHUNK) * CHUNK, cz = Math.floor(state.hoverWorld.z / CHUNK) * CHUNK;
+    ctx.fillStyle = 'rgba(217, 169, 52, 0.22)';
+    ctx.fillRect(wx(cx), wz(cz), CHUNK * state.view.scale, CHUNK * state.view.scale);
+  }
+
+  drawUnitAreas();
+  if (state.area) drawArea(state.area, false);
+  if (state.drag && state.drag.kind === 'rect' && state.drag.moved) {
+    drawArea(areaFromPoints(state.drag.start, state.drag.cur, els.snap.checked), true);
+  }
+  drawEntities();
+}
+
+/* ------------------------------------------------------------------ mapa: mysz */
+
+function pointer(e) {
+  const r = els.canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function unitAt(px, py) {
+  let best = null, bestDist = 16;
+  for (const u of state.units.values()) {
+    const d = Math.hypot(wx(u.x) - px, wz(u.z) - py);
+    if (d <= bestDist) { best = u; bestDist = d; }
+  }
+  return best;
+}
+
+function updateReadout(w) {
+  const x = Math.floor(w.x), z = Math.floor(w.z);
+  let text = 'x ' + x + ', z ' + z + ', chunk ' + Math.floor(x / CHUNK) + ', ' + Math.floor(z / CHUNK);
+  const t = terrainAt(x, z);
+  if (t) text += ', y ' + t.y + (t.water ? ' (woda)' : '');
+  els.coords.textContent = text;
+}
+
+els.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+els.canvas.addEventListener('pointerdown', (e) => {
+  const p = pointer(e);
+  const w = screenToWorld(p.x, p.y);
+
+  if (e.button === 1 || (e.button === 0 && state.space)) {
+    e.preventDefault();
+    els.canvas.setPointerCapture(e.pointerId);
+    state.drag = { kind: 'pan', lx: p.x, ly: p.y };
+    els.canvas.classList.add('grabbing');
+    return;
+  }
+  if (e.button === 2) {
+    e.preventDefault();
+    commandMove(w);
+    return;
+  }
+  if (e.button !== 0) return;
+
+  if (state.tool === 'chunk') {
+    setArea(areaFromPoints(w, w, true));
+    return;
+  }
+  if (state.tool === 'spawn') {
+    spawnAt(w);
+    return;
+  }
+
+  const hit = unitAt(p.x, p.y);
+  if (hit) {
+    toggleSelect(hit.id, e.ctrlKey || e.metaKey || e.shiftKey);
+    return;
+  }
+  els.canvas.setPointerCapture(e.pointerId);
+  state.drag = { kind: 'rect', sx: p.x, sy: p.y, start: w, cur: w, moved: false };
+});
+
+els.canvas.addEventListener('pointermove', (e) => {
+  const p = pointer(e);
+  const w = screenToWorld(p.x, p.y);
+  state.hoverWorld = w;
+  updateReadout(w);
+  const d = state.drag;
+  if (d && d.kind === 'pan') {
+    state.view.cx -= (p.x - d.lx) / state.view.scale;
+    state.view.cz -= (p.y - d.ly) / state.view.scale;
+    d.lx = p.x; d.ly = p.y;
+  } else if (d && d.kind === 'rect') {
+    d.cur = w;
+    if (Math.hypot(p.x - d.sx, p.y - d.sy) > 4) d.moved = true;
+  } else if (state.tool !== 'chunk') {
+    return;
+  }
+  scheduleDraw();
+});
+
+function endDrag(e) {
+  const d = state.drag;
+  if (!d) return;
+  state.drag = null;
+  els.canvas.classList.remove('grabbing');
+  if (d.kind === 'rect') {
+    if (d.moved) {
+      setArea(areaFromPoints(d.start, d.cur, els.snap.checked));
+    } else {
+      state.selected.clear();
+      renderUnits();
+      updateControls();
+    }
+  }
+  scheduleDraw();
+}
+els.canvas.addEventListener('pointerup', endDrag);
+els.canvas.addEventListener('pointercancel', endDrag);
+els.canvas.addEventListener('pointerleave', () => { state.hoverWorld = null; scheduleDraw(); });
+
+els.canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const p = pointer(e);
+  zoomAt(Math.exp(-e.deltaY * 0.0015), p.x, p.y);
+}, { passive: false });
+
+/* ------------------------------------------------------------------ narzędzia i klawisze */
+
+function setTool(name) {
+  state.tool = name;
+  for (const b of toolButtons) b.setAttribute('aria-pressed', b.dataset.tool === name ? 'true' : 'false');
+  scheduleDraw();
+}
+for (const b of toolButtons) b.addEventListener('click', () => setTool(b.dataset.tool));
+
+function typing(target) {
+  return target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA');
+}
+document.addEventListener('keydown', (e) => {
+  if (typing(e.target)) return;
+  if (e.code === 'Space') {
+    state.space = true;
+    if (e.target === document.body || e.target === els.canvas) e.preventDefault();
+  } else if (e.key === 'Escape') {
+    setArea(null);
+    state.selected.clear();
+    renderUnits();
+    updateControls();
+    scheduleDraw();
+  }
+});
+document.addEventListener('keyup', (e) => { if (e.code === 'Space') state.space = false; });
+window.addEventListener('blur', () => { state.space = false; });
+
+/* ------------------------------------------------------------------ start */
+
+els.connectBtn.addEventListener('click', () => { if (state.wantConnected) disconnect(); else connect(); });
+els.url.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !state.wantConnected) connect(); });
+for (const k of ['what', 'natural', 'fell', 'split', 'snap', 'showTerrain']) {
+  els[k].addEventListener('change', () => { savePrefs(); updateControls(); scheduleDraw(); });
+}
+
+loadPrefs();
+new ResizeObserver(resize).observe(els.mapWrap);
+resize();
+updateAreaInfo();
+renderUnits();
+updateControls();
+log('info', 'Dashboard gotowy. Wpisz adres moda i kliknij Połącz.');
+})();
+</script>
+</body>
+</html>

@@ -13,15 +13,19 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import org.slf4j.Logger;
 
 import javax.annotation.Nullable;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.Locale;
 import java.util.UUID;
@@ -34,9 +38,10 @@ import java.util.UUID;
  * <p>
  * Obsługiwane komendy (pole "type"; opcjonalne "requestId" jest odsyłane w odpowiedzi):
  * <pre>
- * {"type":"GET_STATE"}
- * {"type":"SPAWN","x":100,"y":70,"z":100}                        (overworld)
- * {"type":"MOVE","unit":"&lt;uuid&gt;","x":..,"y":..,"z":..}
+ * {"type":"GET_STATE"}                                            (jednostki + gracze)
+ * {"type":"GET_TERRAIN","chunks":[[cx,cz],...]}                     (maks. 64 chunków; kolory i wysokości powierzchni)
+ * {"type":"SPAWN","x":100,"z":100[,"y":70]}                        (overworld; bez "y" na powierzchni terenu)
+ * {"type":"MOVE","unit":"&lt;uuid&gt;","x":..,"z":..[,"y":..]}            (bez "y" na powierzchni terenu)
  * {"type":"ATTACK","unit":"&lt;uuid&gt;","target":"&lt;uuid | nick gracza | nearest:minecraft:pig&gt;"}
  * {"type":"GATHER","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..]}
  * {"type":"HARVEST","unit":"&lt;uuid&gt;","chunkX":..,"chunkZ":..}                (cały chunk)
@@ -64,6 +69,7 @@ public final class RiceManBridge {
                 String type = requireString(msg, "type").toUpperCase(Locale.ROOT);
                 response = switch (type) {
                     case "GET_STATE" -> getState(server);
+                    case "GET_TERRAIN" -> terrain(server, msg);
                     case "SPAWN" -> spawn(server, msg);
                     case "MOVE" -> move(server, msg);
                     case "ATTACK" -> attack(server, msg);
@@ -96,15 +102,134 @@ public final class RiceManBridge {
                 }
             }
         }
+        JsonArray players = new JsonArray();
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+            JsonObject po = new JsonObject();
+            po.addProperty("name", p.getName().getString());
+            po.addProperty("dimension", p.level().dimension().location().toString());
+            po.addProperty("x", round2(p.getX()));
+            po.addProperty("y", round2(p.getY()));
+            po.addProperty("z", round2(p.getZ()));
+            players.add(po);
+        }
+
         JsonObject res = ok("STATE");
         res.addProperty("gameTime", server.overworld().getGameTime());
         res.add("units", units);
+        res.add("players", players);
         return res;
+    }
+
+    // ---------------------------------------------------------------- teren
+
+    private static final int MAX_TERRAIN_CHUNKS = 64;
+
+    /**
+     * Zwraca powierzchnię podanych chunków (overworld) do narysowania mapy.
+     * Dla każdego bloku 6 bajtów: R, G, B (kolor z map Minecrafta), wysokość (2 bajty, licząc od
+     * minY świata) i głębokość wody (0 = brak wody). Bajty są zakodowane w base64, blok po bloku,
+     * wierszami (z rośnie co 16 bloków). Niezaładowane chunki wracają w "missing".
+     */
+    private static JsonObject terrain(MinecraftServer server, JsonObject msg) {
+        ServerLevel level = server.overworld();
+        JsonElement el = msg.get("chunks");
+        if (el == null || !el.isJsonArray()) {
+            throw new IllegalArgumentException("Missing or invalid field: chunks");
+        }
+        JsonArray requested = el.getAsJsonArray();
+        if (requested.size() > MAX_TERRAIN_CHUNKS) {
+            throw new IllegalArgumentException("Too many chunks (max " + MAX_TERRAIN_CHUNKS + " per request)");
+        }
+
+        JsonArray chunks = new JsonArray();
+        JsonArray missing = new JsonArray();
+        for (JsonElement item : requested) {
+            if (!item.isJsonArray() || item.getAsJsonArray().size() != 2) {
+                throw new IllegalArgumentException("Each chunk must be [chunkX, chunkZ]");
+            }
+            JsonArray pair = item.getAsJsonArray();
+            int cx;
+            int cz;
+            try {
+                cx = pair.get(0).getAsInt();
+                cz = pair.get(1).getAsInt();
+            } catch (RuntimeException e) {
+                throw new IllegalArgumentException("Chunk coordinates must be integers");
+            }
+            if (level.isLoaded(new BlockPos(cx << 4, 0, cz << 4))) {
+                chunks.add(scanChunk(level, cx, cz));
+            } else {
+                JsonArray m = new JsonArray();
+                m.add(cx);
+                m.add(cz);
+                missing.add(m);
+            }
+        }
+
+        JsonObject res = ok("TERRAIN");
+        res.addProperty("minY", level.getMinBuildHeight());
+        res.add("chunks", chunks);
+        res.add("missing", missing);
+        return res;
+    }
+
+    private static JsonObject scanChunk(ServerLevel level, int cx, int cz) {
+        int minY = level.getMinBuildHeight();
+        byte[] data = new byte[16 * 16 * 6];
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+
+        for (int dz = 0; dz < 16; dz++) {
+            for (int dx = 0; dx < 16; dx++) {
+                int x = (cx << 4) + dx;
+                int z = (cz << 4) + dz;
+                int y = level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z) - 1;
+
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                boolean water = false;
+                // Przechodzimy w dół przez rośliny i inne bloki bez kolizji (trawa, kwiaty, uprawy).
+                for (int step = 0; step < 8 && y > minY; step++) {
+                    FluidState fluid = state.getFluidState();
+                    if (!fluid.isEmpty()) {
+                        water = !fluid.is(FluidTags.LAVA);
+                        break;
+                    }
+                    if (state.blocksMotion()) {
+                        break;
+                    }
+                    y--;
+                    pos.set(x, y, z);
+                    state = level.getBlockState(pos);
+                }
+
+                int depth = 0;
+                if (water) {
+                    int floor = level.getHeight(Heightmap.Types.OCEAN_FLOOR, x, z) - 1;
+                    depth = Math.max(1, Math.min(255, y - floor));
+                }
+
+                int rgb = state.getMapColor(level, pos).col;
+                int h = y - minY;
+                int i = (dz * 16 + dx) * 6;
+                data[i] = (byte) (rgb >> 16);
+                data[i + 1] = (byte) (rgb >> 8);
+                data[i + 2] = (byte) rgb;
+                data[i + 3] = (byte) (h >> 8);
+                data[i + 4] = (byte) h;
+                data[i + 5] = (byte) depth;
+            }
+        }
+
+        JsonObject o = new JsonObject();
+        o.addProperty("cx", cx);
+        o.addProperty("cz", cz);
+        o.addProperty("data", Base64.getEncoder().encodeToString(data));
+        return o;
     }
 
     private static JsonObject spawn(MinecraftServer server, JsonObject msg) {
         ServerLevel level = server.overworld();
-        BlockPos pos = requirePos(msg);
+        BlockPos pos = posOrSurface(level, msg);
         RiceManEntity unit = ModEntities.RICEMAN.get().create(level);
         if (unit == null) {
             throw new IllegalArgumentException("Could not create riceman");
@@ -117,8 +242,24 @@ public final class RiceManBridge {
 
     private static JsonObject move(MinecraftServer server, JsonObject msg) {
         RiceManEntity unit = requireUnit(server, msg);
-        unit.commandMoveTo(requirePos(msg));
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        unit.commandMoveTo(posOrSurface(level, msg));
         return ack("MOVE", unit);
+    }
+
+    /** Pozycja z x, y, z. Bez "y" wysokość bierze się z powierzchni terenu w (x, z). */
+    private static BlockPos posOrSurface(ServerLevel level, JsonObject o) {
+        int x = requireInt(o, "x");
+        int z = requireInt(o, "z");
+        if (o.has("y")) {
+            return new BlockPos(x, requireInt(o, "y"), z);
+        }
+        if (!level.isLoaded(new BlockPos(x, 0, z))) {
+            throw new IllegalArgumentException("Target chunk is not loaded");
+        }
+        return new BlockPos(x, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z), z);
     }
 
     private static JsonObject attack(MinecraftServer server, JsonObject msg) {
