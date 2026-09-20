@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
+import com.ukkirot.ryzoludzie.entity.HarvestArea;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
 import com.ukkirot.ryzoludzie.registry.ModEntities;
 import net.minecraft.core.BlockPos;
@@ -16,6 +17,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import org.slf4j.Logger;
 
@@ -37,6 +39,11 @@ import java.util.UUID;
  * {"type":"MOVE","unit":"&lt;uuid&gt;","x":..,"y":..,"z":..}
  * {"type":"ATTACK","unit":"&lt;uuid&gt;","target":"&lt;uuid | nick gracza | nearest:minecraft:pig&gt;"}
  * {"type":"GATHER","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..]}
+ * {"type":"HARVEST","unit":"&lt;uuid&gt;","chunkX":..,"chunkZ":..}                (cały chunk)
+ * {"type":"HARVEST","unit":"&lt;uuid&gt;","x1":..,"z1":..,"x2":..,"z2":..}       (prostokąt; opcjonalnie "y1","y2")
+ * {"type":"HARVEST","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..][,"radius":12]}  (kwadrat wokół punktu / jednostki)
+ *   opcje: "what":"logs|crops|all", "natural_only":true, "fell":true
+ *   obszar maks. 64x64 bloków; bez "y1","y2" zakres wysokości liczy się z mapy terenu (chunki muszą być załadowane)
  * {"type":"STOP","unit":"&lt;uuid&gt;"}
  * </pre>
  */
@@ -61,6 +68,7 @@ public final class RiceManBridge {
                     case "MOVE" -> move(server, msg);
                     case "ATTACK" -> attack(server, msg);
                     case "GATHER" -> gather(server, msg);
+                    case "HARVEST" -> harvest(server, msg);
                     case "STOP" -> stop(server, msg);
                     default -> throw new IllegalArgumentException("Unknown command type: " + type);
                 };
@@ -124,6 +132,125 @@ public final class RiceManBridge {
         RiceManEntity unit = requireUnit(server, msg);
         unit.commandGather(hasPos(msg) ? requirePos(msg) : null);
         return ack("GATHER", unit);
+    }
+
+    private static final int DEFAULT_RADIUS = 12;
+    private static final int MAX_RADIUS = 32;
+    private static final int MAX_AREA_SIDE = 64;
+
+    private static JsonObject harvest(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        RiceManEntity.HarvestMode mode = parseHarvestMode(msg);
+        boolean naturalOnly = optionalBoolean(msg, "natural_only", true);
+        boolean fell = optionalBoolean(msg, "fell", true);
+        HarvestArea area = parseArea(unit, msg);
+
+        unit.commandHarvest(area, mode, naturalOnly, fell);
+
+        JsonObject res = ack("HARVEST", unit);
+        res.add("area", areaJson(area));
+        return res;
+    }
+
+    /** Chunk (chunkX/chunkZ), prostokąt (x1,z1,x2,z2) albo kwadrat wokół punktu (x,y,z,radius). */
+    private static HarvestArea parseArea(RiceManEntity unit, JsonObject msg) {
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+
+        int minX;
+        int maxX;
+        int minZ;
+        int maxZ;
+        if (msg.has("chunkX") || msg.has("chunkZ")) {
+            int cx = requireInt(msg, "chunkX");
+            int cz = requireInt(msg, "chunkZ");
+            minX = cx << 4;
+            maxX = minX + 15;
+            minZ = cz << 4;
+            maxZ = minZ + 15;
+        } else if (msg.has("x1") || msg.has("z1") || msg.has("x2") || msg.has("z2")) {
+            int ax = requireInt(msg, "x1");
+            int az = requireInt(msg, "z1");
+            int bx = requireInt(msg, "x2");
+            int bz = requireInt(msg, "z2");
+            minX = Math.min(ax, bx);
+            maxX = Math.max(ax, bx);
+            minZ = Math.min(az, bz);
+            maxZ = Math.max(az, bz);
+        } else {
+            BlockPos c = hasPos(msg) ? requirePos(msg) : unit.blockPosition();
+            int r = msg.has("radius") ? requireInt(msg, "radius") : DEFAULT_RADIUS;
+            r = Math.max(2, Math.min(r, MAX_RADIUS));
+            return HarvestArea.of(c.getX() - r, c.getY() - 6, c.getZ() - r,
+                    c.getX() + r, c.getY() + 12, c.getZ() + r);
+        }
+
+        if (maxX - minX + 1 > MAX_AREA_SIDE || maxZ - minZ + 1 > MAX_AREA_SIDE) {
+            throw new IllegalArgumentException("Area too large (max " + MAX_AREA_SIDE + "x" + MAX_AREA_SIDE + " blocks)");
+        }
+
+        int minY;
+        int maxY;
+        if (msg.has("y1") && msg.has("y2")) {
+            int a = requireInt(msg, "y1");
+            int b = requireInt(msg, "y2");
+            minY = Math.min(a, b);
+            maxY = Math.max(a, b);
+        } else {
+            // Zakres wysokości z mapy terenu: od najniższego gruntu do czubków najwyższych pni.
+            for (int cx = minX >> 4; cx <= maxX >> 4; cx++) {
+                for (int cz = minZ >> 4; cz <= maxZ >> 4; cz++) {
+                    if (!level.isLoaded(new BlockPos(cx << 4, 0, cz << 4))) {
+                        throw new IllegalArgumentException("Area is not loaded (chunk " + cx + ", " + cz + ")");
+                    }
+                }
+            }
+            int lo = Integer.MAX_VALUE;
+            int hi = Integer.MIN_VALUE;
+            for (int x = minX; x <= maxX; x++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    int h = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                    lo = Math.min(lo, h);
+                    hi = Math.max(hi, h);
+                }
+            }
+            minY = lo - 3;
+            maxY = hi + 1;
+        }
+        return HarvestArea.of(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    private static JsonObject areaJson(HarvestArea a) {
+        JsonObject o = new JsonObject();
+        o.addProperty("x1", a.minX());
+        o.addProperty("y1", a.minY());
+        o.addProperty("z1", a.minZ());
+        o.addProperty("x2", a.maxX());
+        o.addProperty("y2", a.maxY());
+        o.addProperty("z2", a.maxZ());
+        return o;
+    }
+
+    private static boolean optionalBoolean(JsonObject o, String key, boolean defaultValue) {
+        if (!o.has(key)) {
+            return defaultValue;
+        }
+        JsonElement el = o.get(key);
+        if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalArgumentException("Field '" + key + "' must be true or false");
+        }
+        return el.getAsBoolean();
+    }
+
+    private static RiceManEntity.HarvestMode parseHarvestMode(JsonObject msg) {
+        String what = msg.has("what") ? requireString(msg, "what").toLowerCase(Locale.ROOT) : "all";
+        return switch (what) {
+            case "logs", "wood", "trees" -> RiceManEntity.HarvestMode.LOGS;
+            case "crops", "farm" -> RiceManEntity.HarvestMode.CROPS;
+            case "all" -> RiceManEntity.HarvestMode.ALL;
+            default -> throw new IllegalArgumentException("Field 'what' must be logs, crops or all");
+        };
     }
 
     private static JsonObject stop(MinecraftServer server, JsonObject msg) {
@@ -194,6 +321,10 @@ public final class RiceManBridge {
         o.addProperty("z", round2(r.getZ()));
         o.addProperty("health", round2(r.getHealth()));
         o.addProperty("command", r.getCommand().name());
+        HarvestArea harvestArea = r.getHarvestArea();
+        if (r.getCommand() == RiceManEntity.Command.HARVEST && harvestArea != null) {
+            o.add("area", areaJson(harvestArea));
+        }
 
         JsonObject items = new JsonObject();
         for (ItemStack s : r.getInventory().getItems()) {

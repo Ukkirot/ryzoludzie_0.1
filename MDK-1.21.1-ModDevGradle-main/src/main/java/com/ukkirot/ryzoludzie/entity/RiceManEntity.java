@@ -1,6 +1,7 @@
 package com.ukkirot.ryzoludzie.entity;
 
 import com.ukkirot.ryzoludzie.entity.ai.GatherItemsGoal;
+import com.ukkirot.ryzoludzie.entity.ai.HarvestBlocksGoal;
 import com.ukkirot.ryzoludzie.entity.ai.IdleStrollGoal;
 import com.ukkirot.ryzoludzie.entity.ai.MoveToCommandGoal;
 import net.minecraft.core.BlockPos;
@@ -36,7 +37,30 @@ import javax.annotation.Nullable;
  */
 public class RiceManEntity extends PathfinderMob {
 
-    public enum Command {IDLE, MOVE, ATTACK, GATHER}
+    public enum Command {IDLE, MOVE, ATTACK, GATHER, HARVEST}
+
+    /** Co ma zbierać komenda HARVEST. */
+    public enum HarvestMode {
+        LOGS(true, false),
+        CROPS(false, true),
+        ALL(true, true);
+
+        private final boolean logs;
+        private final boolean crops;
+
+        HarvestMode(boolean logs, boolean crops) {
+            this.logs = logs;
+            this.crops = crops;
+        }
+
+        public boolean allowsLogs() {
+            return logs;
+        }
+
+        public boolean allowsCrops() {
+            return crops;
+        }
+    }
 
     public static final int INVENTORY_SIZE = 9;
     public static final double GATHER_RADIUS = 12.0D;
@@ -45,6 +69,11 @@ public class RiceManEntity extends PathfinderMob {
     private Command command = Command.IDLE;
     @Nullable
     private BlockPos commandPos;
+    private HarvestMode harvestMode = HarvestMode.ALL;
+    @Nullable
+    private HarvestArea harvestArea;
+    private boolean naturalOnly = true;
+    private boolean fellTrees = true;
 
     public RiceManEntity(EntityType<? extends RiceManEntity> type, Level level) {
         super(type, level);
@@ -64,6 +93,7 @@ public class RiceManEntity extends PathfinderMob {
         this.goalSelector.addGoal(1, new MeleeAttackGoal(this, 1.1D, true));
         this.goalSelector.addGoal(2, new MoveToCommandGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new GatherItemsGoal(this, 1.0D));
+        this.goalSelector.addGoal(3, new HarvestBlocksGoal(this, 1.0D));
         this.goalSelector.addGoal(4, new IdleStrollGoal(this, 0.8D));
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));
         this.goalSelector.addGoal(6, new RandomLookAroundGoal(this));
@@ -94,6 +124,25 @@ public class RiceManEntity extends PathfinderMob {
         this.commandPos = (center != null ? center : this.blockPosition()).immutable();
     }
 
+    /**
+     * Pracuje w podanym obszarze: ścina drzewa (po jednym, do końca) i/lub zbiera dojrzałe uprawy.
+     * Poza obszarem niczego nie rusza. Kończy się, gdy w obszarze nic już nie zostało.
+     * <p>
+     * naturalOnly=true: tnie tylko kłody z naturalnych drzew (połączone z liśćmi, których nie
+     * postawił gracz), więc konstrukcje z kłód są bezpieczne.
+     * fellTrees=true: po przecięciu pnia reszta kłód tego drzewa pada od razu, więc nie zostają
+     * wiszące szczyty wysokich drzew.
+     */
+    public void commandHarvest(HarvestArea area, HarvestMode mode, boolean naturalOnly, boolean fellTrees) {
+        this.setTarget(null);
+        this.command = Command.HARVEST;
+        this.harvestArea = area;
+        this.harvestMode = mode;
+        this.naturalOnly = naturalOnly;
+        this.fellTrees = fellTrees;
+        this.commandPos = null;
+    }
+
     public void commandStop() {
         this.setTarget(null);
         this.getNavigation().stop();
@@ -113,6 +162,23 @@ public class RiceManEntity extends PathfinderMob {
     @Nullable
     public BlockPos getCommandPos() {
         return commandPos;
+    }
+
+    public HarvestMode getHarvestMode() {
+        return harvestMode;
+    }
+
+    @Nullable
+    public HarvestArea getHarvestArea() {
+        return harvestArea;
+    }
+
+    public boolean isNaturalOnly() {
+        return naturalOnly;
+    }
+
+    public boolean isFellTrees() {
+        return fellTrees;
     }
 
     public SimpleContainer getInventory() {
@@ -164,6 +230,12 @@ public class RiceManEntity extends PathfinderMob {
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.putString("RcCommand", command.name());
+        tag.putString("RcHarvestMode", harvestMode.name());
+        tag.putBoolean("RcNaturalOnly", naturalOnly);
+        tag.putBoolean("RcFellTrees", fellTrees);
+        if (harvestArea != null) {
+            tag.putIntArray("RcHarvestArea", harvestArea.toArray());
+        }
         if (commandPos != null) {
             tag.putIntArray("RcPos", new int[]{commandPos.getX(), commandPos.getY(), commandPos.getZ()});
         }
@@ -178,6 +250,14 @@ public class RiceManEntity extends PathfinderMob {
         } catch (IllegalArgumentException e) {
             this.command = Command.IDLE;
         }
+        try {
+            this.harvestMode = HarvestMode.valueOf(tag.getString("RcHarvestMode"));
+        } catch (IllegalArgumentException e) {
+            this.harvestMode = HarvestMode.ALL;
+        }
+        this.harvestArea = HarvestArea.fromArray(tag.getIntArray("RcHarvestArea"));
+        this.naturalOnly = !tag.contains("RcNaturalOnly") || tag.getBoolean("RcNaturalOnly");
+        this.fellTrees = !tag.contains("RcFellTrees") || tag.getBoolean("RcFellTrees");
         int[] p = tag.getIntArray("RcPos");
         this.commandPos = p.length == 3 ? new BlockPos(p[0], p[1], p[2]) : null;
         if (tag.contains("RcInventory", Tag.TAG_LIST)) {
@@ -185,6 +265,9 @@ public class RiceManEntity extends PathfinderMob {
         }
         // Cel ataku nie jest zapisywany, więc po wczytaniu świata ATTACK nie ma sensu.
         if (this.command == Command.ATTACK) {
+            this.command = Command.IDLE;
+        }
+        if (this.command == Command.HARVEST && this.harvestArea == null) {
             this.command = Command.IDLE;
         }
     }
