@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
+import com.ukkirot.ryzoludzie.crafting.RiceCrafter;
 import com.ukkirot.ryzoludzie.entity.HarvestArea;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
 import com.ukkirot.ryzoludzie.registry.ModEntities;
@@ -13,11 +14,15 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -49,6 +54,14 @@ import java.util.UUID;
  * {"type":"HARVEST","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..][,"radius":12]}  (kwadrat wokół punktu / jednostki)
  *   opcje: "what":"logs|crops|all", "natural_only":true, "fell":true
  *   obszar maks. 64x64 bloków; bez "y1","y2" zakres wysokości liczy się z mapy terenu (chunki muszą być załadowane)
+ * {"type":"CRAFT","unit":"&lt;uuid&gt;","item":"minecraft:chest"[,"count":1][,"place":true[,"x":..,"z":..[,"y":..]]]}
+ *   wytwarza przedmiot z tego, co ma w ekwipunku (deski, patyki i stół rzemieślniczy robi sam);
+ *   "place":true stawia gotowy blok w podanym miejscu albo w wolnym miejscu obok
+ * {"type":"PLACE","unit":"&lt;uuid&gt;","item":"minecraft:chest"[,"x":..,"z":..[,"y":..]]}
+ * {"type":"SET_STORAGE","unit":"&lt;uuid&gt;","x":..,"z":..[,"y":..]}   (przypisuje magazyn: skrzynię, beczkę itp.)
+ * {"type":"SET_STORAGE","unit":"&lt;uuid&gt;","clear":true}            (odpina magazyn)
+ * {"type":"DEPOSIT","unit":"&lt;uuid&gt;"[,"resume":false]}            (odkłada cały ekwipunek poza narzędziem)
+ * {"type":"WITHDRAW","unit":"&lt;uuid&gt;","item":"minecraft:oak_planks"[,"count":64]}
  * {"type":"STOP","unit":"&lt;uuid&gt;"}
  * </pre>
  */
@@ -75,6 +88,11 @@ public final class RiceManBridge {
                     case "ATTACK" -> attack(server, msg);
                     case "GATHER" -> gather(server, msg);
                     case "HARVEST" -> harvest(server, msg);
+                    case "CRAFT" -> craft(server, msg);
+                    case "PLACE" -> place(server, msg);
+                    case "SET_STORAGE" -> setStorage(server, msg);
+                    case "DEPOSIT" -> deposit(server, msg);
+                    case "WITHDRAW" -> withdraw(server, msg);
                     case "STOP" -> stop(server, msg);
                     default -> throw new IllegalArgumentException("Unknown command type: " + type);
                 };
@@ -394,6 +412,120 @@ public final class RiceManBridge {
         };
     }
 
+    private static JsonObject craft(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        Item item = requireItem(msg, "item");
+        int count = msg.has("count") ? requireInt(msg, "count") : 1;
+        if (count < 1 || count > 64) {
+            throw new IllegalArgumentException("Field 'count' must be between 1 and 64");
+        }
+        boolean place = optionalBoolean(msg, "place", false);
+        if (place && !(item instanceof BlockItem)) {
+            throw new IllegalArgumentException(itemName(item) + " is not a block and cannot be placed");
+        }
+        BlockPos placeAt = (place && msg.has("x") && msg.has("z")) ? posOrSurface(level, msg) : null;
+
+        RiceCrafter.Plan plan = RiceCrafter.plan(unit, level, item, count);
+        if (!plan.ok) {
+            throw new IllegalArgumentException("Cannot craft " + itemName(item) + ": missing "
+                    + (plan.missing != null ? itemName(plan.missing) : "ingredients"));
+        }
+
+        unit.commandCraft(item, count, place, placeAt);
+
+        JsonObject res = ack("CRAFT", unit);
+        JsonArray steps = new JsonArray();
+        for (RiceCrafter.Step step : plan.steps) {
+            steps.add(RiceCrafter.describe(step, level));
+        }
+        res.add("steps", steps);
+        return res;
+    }
+
+    private static JsonObject place(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        Item item = requireItem(msg, "item");
+        if (!(item instanceof BlockItem)) {
+            throw new IllegalArgumentException(itemName(item) + " is not a block and cannot be placed");
+        }
+        if (!RiceCrafter.has(unit, item)) {
+            throw new IllegalArgumentException("Unit does not carry " + itemName(item));
+        }
+        BlockPos pos = (msg.has("x") && msg.has("z")) ? posOrSurface(level, msg) : null;
+        unit.commandPlace(item, pos);
+        return ack("PLACE", unit);
+    }
+
+    /** Przedmiot z pola JSON: "minecraft:chest" albo samo "chest". */
+    private static Item requireItem(JsonObject o, String key) {
+        String raw = requireString(o, key).trim();
+        ResourceLocation id = ResourceLocation.tryParse(raw.contains(":") ? raw : "minecraft:" + raw);
+        if (id == null) {
+            throw new IllegalArgumentException("Bad item id: " + raw);
+        }
+        return BuiltInRegistries.ITEM.getOptional(id)
+                .filter((item) -> item != Items.AIR)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown item: " + raw));
+    }
+
+    private static String itemName(Item item) {
+        return BuiltInRegistries.ITEM.getKey(item).toString();
+    }
+
+    private static JsonObject setStorage(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (optionalBoolean(msg, "clear", false)) {
+            unit.setStorageChest(null);
+            return ack("SET_STORAGE", unit);
+        }
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        BlockPos pos = posOrSurface(level, msg);
+        if (!msg.has("y") && !(level.getBlockEntity(pos) instanceof Container)) {
+            // Bez podanego "y" pos to wolne miejsce NAD najwyższym blokiem (dobre do stanięcia).
+            // Skrzynia to właśnie ten najwyższy blok, więc sprawdzamy też jedno niżej.
+            BlockPos below = pos.below();
+            if (level.getBlockEntity(below) instanceof Container) {
+                pos = below;
+            }
+        }
+        if (!(level.getBlockEntity(pos) instanceof Container)) {
+            throw new IllegalArgumentException("There is no container at that position");
+        }
+        unit.setStorageChest(pos);
+        return ack("SET_STORAGE", unit);
+    }
+
+    private static JsonObject deposit(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (unit.getStorageChest() == null) {
+            throw new IllegalArgumentException("Unit has no assigned storage; use SET_STORAGE first");
+        }
+        unit.commandDeposit(optionalBoolean(msg, "resume", false));
+        return ack("DEPOSIT", unit);
+    }
+
+    private static JsonObject withdraw(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (unit.getStorageChest() == null) {
+            throw new IllegalArgumentException("Unit has no assigned storage; use SET_STORAGE first");
+        }
+        Item item = requireItem(msg, "item");
+        int count = msg.has("count") ? requireInt(msg, "count") : 64;
+        if (count < 1 || count > 64) {
+            throw new IllegalArgumentException("Field 'count' must be between 1 and 64");
+        }
+        unit.commandWithdraw(item, count);
+        return ack("WITHDRAW", unit);
+    }
+
     private static JsonObject stop(MinecraftServer server, JsonObject msg) {
         RiceManEntity unit = requireUnit(server, msg);
         unit.commandStop();
@@ -462,6 +594,31 @@ public final class RiceManBridge {
         o.addProperty("z", round2(r.getZ()));
         o.addProperty("health", round2(r.getHealth()));
         o.addProperty("command", r.getCommand().name());
+        ItemStack tool = r.getMainHandItem();
+        if (!tool.isEmpty()) {
+            o.addProperty("tool", itemName(tool.getItem()));
+        }
+        if (r.getNoticeText() != null) {
+            JsonObject n = new JsonObject();
+            n.addProperty("level", r.getNoticeLevel());
+            n.addProperty("text", r.getNoticeText());
+            o.add("notice", n);
+            r.clearNotice(); // dashboard dostaje go raz, w najbliższym GET_STATE
+        }
+        BlockPos storage = r.getStorageChest();
+        if (storage != null) {
+            JsonObject s = new JsonObject();
+            s.addProperty("x", storage.getX());
+            s.addProperty("y", storage.getY());
+            s.addProperty("z", storage.getZ());
+            o.add("storage", s);
+        }
+        if (r.getCommand() == RiceManEntity.Command.CRAFT && r.getCraftItem() != null) {
+            o.addProperty("craft", itemName(r.getCraftItem()));
+        }
+        if (r.getCommand() == RiceManEntity.Command.PLACE && r.getPlaceItem() != null) {
+            o.addProperty("place", itemName(r.getPlaceItem()));
+        }
         HarvestArea harvestArea = r.getHarvestArea();
         if (r.getCommand() == RiceManEntity.Command.HARVEST && harvestArea != null) {
             o.add("area", areaJson(harvestArea));

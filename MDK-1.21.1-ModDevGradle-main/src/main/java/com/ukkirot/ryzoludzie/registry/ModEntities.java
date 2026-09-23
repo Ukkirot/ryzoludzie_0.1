@@ -15,7 +15,7 @@ public final class ModEntities {
     public static final DeferredHolder<EntityType<?>, EntityType<RiceManEntity>> RICEMAN =
             ENTITY_TYPES.register("riceman", () ->
                     EntityType.Builder.of(RiceManEntity::new, MobCategory.CREATURE)
-                            .sized(0.6F, 1.8F)
+                            .sized(0.5F, 1.0F)
                             .clientTrackingRange(10)
                             .build("riceman"));
 

@@ -3,6 +3,7 @@ package com.ukkirot.ryzoludzie.entity.ai;
 import com.ukkirot.ryzoludzie.RyzoludzieMod;
 import com.ukkirot.ryzoludzie.entity.HarvestArea;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
+import com.ukkirot.ryzoludzie.entity.ToolUse;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -35,8 +36,8 @@ import java.util.Set;
  * Kolejność pracy:
  * - drzewa: wybiera najbliższe drzewo i kończy je w całości, zanim przejdzie do następnego.
  * Dosięga tylko dolnych kłód (ok. 4-5 bloków nad ziemią). Przy fellTrees=true po przecięciu
- * pierwszej kłody reszta kłód tego drzewa (w obszarze) jest ścinana po kolei od góry,
- * co FELL_LOG_TICKS ticków, więc drzewo nie znika w jednej chwili;
+ * pierwszej kłody reszta kłód tego drzewa (w obszarze) jest ścinana po kolei od góry, w tempie
+ * zależnym od narzędzia (ToolUse), tak jak każde inne cięcie;
  * - uprawy: zbiera dojrzałe i sadzi od nowa (za darmo, bez zużycia nasion);
  * - drop trafia od razu do ekwipunku jednostki.
  * <p>
@@ -50,13 +51,6 @@ public class HarvestBlocksGoal extends Goal {
     private static final double REACH_SQR = 16.0D; // 4 bloki od oczu
     private static final int MAX_LOG_HEIGHT_ABOVE_BASE = 4; // dosięg z ziemi
     private static final int GIVE_UP_TICKS = 20 * 10;
-    private static final int LOG_BREAK_TICKS = 25;
-    /**
-     * Ile ticków zajmuje ścięcie każdej kolejnej kłody drzewa po pierwszej (20 ticków = 1 sekunda).
-     * Chcesz, żeby drzewo padało wolniej, zwiększ; szybciej, zmniejsz.
-     */
-    private static final int FELL_LOG_TICKS = 12;
-    private static final int CROP_BREAK_TICKS = 8;
     private static final int TREE_SCAN_LIMIT = 300;
 
     private final RiceManEntity mob;
@@ -140,6 +134,7 @@ public class HarvestBlocksGoal extends Goal {
             return;
         }
         if (!level.getGameRules().getBoolean(GameRules.RULE_MOBGRIEFING)) {
+            mob.setNotice("warn", "zbieranie przerwane: gamerule mobGriefing jest wyłączony");
             RyzoludzieMod.LOGGER.warn("[Ryzoludzie] HARVEST przerwany: gamerule mobGriefing jest wylaczony");
             mob.finishCommand();
             return;
@@ -195,7 +190,12 @@ public class HarvestBlocksGoal extends Goal {
             return;
         }
         BlockState state = level.getBlockState(pos);
-        int required = state.is(BlockTags.LOGS) ? LOG_BREAK_TICKS : CROP_BREAK_TICKS;
+        ToolUse.equipBestTool(mob, state);
+        int required = ToolUse.breakTicks(mob, state, level, pos);
+        if (required < 0) {
+            ignoreTarget(level); // niezniszczalny blok
+            return;
+        }
 
         breakTicks++;
         if (breakTicks % 6 == 1) {
@@ -231,18 +231,36 @@ public class HarvestBlocksGoal extends Goal {
         target = null;
         breakTicks = 0;
         if (overflow) {
-            mob.finishCommand(); // ekwipunek pelny
+            onFull();
         }
     }
 
-    /** Ścina jedną kłodę z kolejki co FELL_LOG_TICKS ticków, z animacją pękania i machaniem ręką. */
+    /** Ekwipunek pełny: jeśli jest przypisany magazyn, idzie go odłożyć i wraca do pracy; inaczej kończy. */
+    private void onFull() {
+        if (mob.getStorageChest() != null) {
+            mob.commandDeposit(true);
+        } else {
+            mob.finishCommand();
+        }
+    }
+
+    /** Ścina jedną kłodę z kolejki, w tempie zależnym od narzędzia, z animacją pękania i machaniem ręką. */
     private void tickFelling(ServerLevel level, HarvestArea area) {
+        BlockState fellState;
+        int required;
         if (fellTarget == null) {
             fellTarget = nextFellLog(level, area);
             fellTicks = 0;
             if (fellTarget == null) {
                 return; // kolejka pusta, od następnego ticka wracamy do zwykłej pracy
             }
+        }
+        fellState = level.getBlockState(fellTarget);
+        ToolUse.equipBestTool(mob, fellState);
+        required = ToolUse.breakTicks(mob, fellState, level, fellTarget);
+        if (required < 0) {
+            fellTarget = null; // niezniszczalny blok (nie powinno się zdarzyć dla kłody)
+            return;
         }
 
         Vec3 center = Vec3.atCenterOf(fellTarget);
@@ -253,16 +271,15 @@ public class HarvestBlocksGoal extends Goal {
         if (fellTicks % 6 == 1) {
             mob.swing(InteractionHand.MAIN_HAND);
         }
-        level.destroyBlockProgress(mob.getId(), fellTarget, Math.min(9, fellTicks * 10 / FELL_LOG_TICKS));
+        level.destroyBlockProgress(mob.getId(), fellTarget, Math.min(9, fellTicks * 10 / required));
 
-        if (fellTicks >= FELL_LOG_TICKS) {
+        if (fellTicks >= required) {
             BlockPos pos = fellTarget;
             level.destroyBlockProgress(mob.getId(), pos, -1);
             fellTarget = null;
-            BlockState state = level.getBlockState(pos);
-            if (state.is(BlockTags.LOGS) && breakAndCollect(level, pos, state)) {
+            if (fellState.is(BlockTags.LOGS) && breakAndCollect(level, pos, fellState)) {
                 fellQueue.clear();
-                mob.finishCommand(); // ekwipunek pelny
+                onFull();
             }
         }
     }
@@ -281,8 +298,12 @@ public class HarvestBlocksGoal extends Goal {
 
     /** Niszczy blok, dodaje drop do ekwipunku, uprawy sadzi od nowa. Zwraca true, gdy zabrakło miejsca. */
     private boolean breakAndCollect(ServerLevel level, BlockPos pos, BlockState state) {
-        List<ItemStack> drops = Block.getDrops(state, level, pos, level.getBlockEntity(pos), mob, ItemStack.EMPTY);
+        ToolUse.equipBestTool(mob, state);
+        List<ItemStack> drops = ToolUse.dropsAllowed(mob, state)
+                ? Block.getDrops(state, level, pos, level.getBlockEntity(pos), mob, mob.getMainHandItem())
+                : List.of();
         level.destroyBlock(pos, false, mob);
+        ToolUse.damageTool(mob);
         if (state.getBlock() instanceof CropBlock crop) {
             level.setBlock(pos, crop.getStateForAge(0), Block.UPDATE_ALL); // ponowne zasadzenie
         }

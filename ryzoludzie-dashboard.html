@@ -195,6 +195,8 @@ h2 { font: 700 17px/1.2 var(--serif); }
 #logList li.ok { border-left-color: #5fd07f; }
 #logList li.err { border-left-color: #ef6a53; }
 #logList li.err .msg { color: var(--danger); }
+#logList li.warn { border-left-color: var(--straw); }
+#logList li.warn .msg { color: var(--straw); }
 #logList time { color: var(--rice-muted); flex: none; }
 
 /* ---------- mały ekran ---------- */
@@ -242,6 +244,8 @@ h2 { font: 700 17px/1.2 var(--serif); }
         <button type="button" data-tool="select" aria-pressed="true" title="Klik: zaznacz jednostkę. Przeciągnij: zaznacz obszar">Zaznacz</button>
         <button type="button" data-tool="chunk" aria-pressed="false" title="Klik: zaznacz cały chunk">Chunk</button>
         <button type="button" data-tool="spawn" aria-pressed="false" title="Klik: postaw nowego ryżoludzia">Nowy ryżoludź</button>
+        <button type="button" data-tool="pin" aria-pressed="false" title="Klik: wskaż miejsce, w którym ryżoludź ma coś postawić">Miejsce budowy</button>
+        <button type="button" data-tool="storage" aria-pressed="false" title="Klik: wskaż skrzynię lub inny pojemnik jako magazyn">Magazyn</button>
       </div>
       <label class="check"><input type="checkbox" id="snap"> Przyciągaj do chunków</label>
       <label class="check"><input type="checkbox" id="showTerrain" checked> Teren</label>
@@ -300,6 +304,57 @@ h2 { font: 700 17px/1.2 var(--serif); }
     </div>
 
     <div class="section">
+      <h2>Wytwarzanie i budowa</h2>
+      <label class="field"><span>Przedmiot</span>
+        <input id="craftItem" type="text" list="craftItems" value="minecraft:chest" spellcheck="false" autocomplete="off">
+        <datalist id="craftItems">
+          <option value="minecraft:chest" label="skrzynia"></option>
+          <option value="minecraft:crafting_table" label="stół rzemieślniczy"></option>
+          <option value="minecraft:oak_planks" label="deski dębowe"></option>
+          <option value="minecraft:stick" label="patyk"></option>
+          <option value="minecraft:wooden_axe" label="drewniana siekiera"></option>
+          <option value="minecraft:wooden_pickaxe" label="drewniany kilof"></option>
+          <option value="minecraft:wooden_shovel" label="drewniana łopata"></option>
+          <option value="minecraft:stone_axe" label="kamienna siekiera"></option>
+          <option value="minecraft:stone_pickaxe" label="kamienny kilof"></option>
+          <option value="minecraft:furnace" label="piec"></option>
+          <option value="minecraft:barrel" label="beczka"></option>
+        </datalist>
+      </label>
+      <label class="field"><span>Ilość</span>
+        <input id="craftCount" type="number" min="1" max="64" value="1">
+      </label>
+      <label class="check"><input type="checkbox" id="craftPlace" checked> Postaw po wytworzeniu</label>
+      <p class="hint" id="pinInfo">Miejsce budowy nie jest wskazane, blok stanie obok ryżoludzia.</p>
+      <div class="row"><button type="button" class="btn small" id="pinClear" disabled>Wyczyść miejsce</button></div>
+      <div class="row">
+        <button type="button" class="btn primary" id="craftBtn" disabled>Wytwórz</button>
+        <button type="button" class="btn" id="placeBtn" disabled>Postaw z ekwipunku</button>
+      </div>
+      <p class="hint">Deski, patyki i stół rzemieślniczy ryżoludź zrobi sam, jeśli ma drewno.</p>
+    </div>
+
+    <div class="section">
+      <h2>Magazyn</h2>
+      <p class="hint" id="storagePinInfo">Nie wskazano magazynu na mapie.</p>
+      <div class="row">
+        <button type="button" class="btn small" id="storageAssign" disabled>Ustaw jako magazyn zaznaczonych</button>
+        <button type="button" class="btn small" id="storageClear" disabled>Odepnij magazyn</button>
+      </div>
+      <div class="row">
+        <button type="button" class="btn" id="depositBtn" disabled>Odłóż ekwipunek</button>
+      </div>
+      <label class="field"><span>Pobierz z magazynu</span>
+        <input id="withdrawItem" type="text" list="craftItems" value="minecraft:oak_planks" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="field"><span>Ilość</span>
+        <input id="withdrawCount" type="number" min="1" max="64" value="64">
+      </label>
+      <button type="button" class="btn" id="withdrawBtn" disabled>Pobierz</button>
+      <p class="hint">Ekwipunek zapełniony podczas Zbierania w obszarze sam trafia do magazynu, a jednostka potem wraca do pracy.</p>
+    </div>
+
+    <div class="section">
       <h2>Inne rozkazy</h2>
       <button type="button" class="btn" id="gatherBtn" disabled>Zbieraj przedmioty z ziemi</button>
       <label class="field"><span>Cel ataku</span>
@@ -336,6 +391,10 @@ const els = {
   harvestBtn: $('harvestBtn'), harvestHint: $('harvestHint'),
   gatherBtn: $('gatherBtn'), attackBtn: $('attackBtn'), target: $('target'), stopBtn: $('stopBtn'),
   zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), recenter: $('recenter'),
+  craftItem: $('craftItem'), craftCount: $('craftCount'), craftPlace: $('craftPlace'),
+  craftBtn: $('craftBtn'), placeBtn: $('placeBtn'), pinInfo: $('pinInfo'), pinClear: $('pinClear'),
+  storagePinInfo: $('storagePinInfo'), storageAssign: $('storageAssign'), storageClear: $('storageClear'),
+  depositBtn: $('depositBtn'), withdrawItem: $('withdrawItem'), withdrawCount: $('withdrawCount'), withdrawBtn: $('withdrawBtn'),
   logList: $('logList'),
 };
 const toolButtons = Array.from(document.querySelectorAll('[data-tool]'));
@@ -361,6 +420,10 @@ const CMD = {
   ATTACK:  { label: 'atakuje',             color: '#d2452f' },
   GATHER:  { label: 'zbiera przedmioty',   color: '#d08a1f' },
   HARVEST: { label: 'pracuje w obszarze',  color: '#3aa85c' },
+  CRAFT:   { label: 'wytwarza',            color: '#8a63d2' },
+  PLACE:   { label: 'stawia blok',         color: '#c4703a' },
+  DEPOSIT: { label: 'odkłada do magazynu', color: '#3a8fc4' },
+  WITHDRAW:{ label: 'pobiera z magazynu',  color: '#3a8fc4' },
 };
 
 const state = {
@@ -376,6 +439,8 @@ const state = {
   gameTime: null,
   selected: new Set(),
   area: null,
+  pin: null,
+  storagePin: null,
   tool: 'select',
   view: { cx: 0, cz: 0, scale: 6 },
   drag: null,
@@ -401,6 +466,9 @@ function loadPrefs() {
       if (typeof p[k] === 'boolean') els[k].checked = p[k];
     }
     if (typeof p.target === 'string' && p.target) els.target.value = p.target;
+    if (typeof p.craftItem === 'string' && p.craftItem) els.craftItem.value = p.craftItem;
+    if (typeof p.craftPlace === 'boolean') els.craftPlace.checked = p.craftPlace;
+    if (typeof p.withdrawItem === 'string' && p.withdrawItem) els.withdrawItem.value = p.withdrawItem;
   } catch (e) { /* localStorage może być niedostępny */ }
 }
 function savePrefs() {
@@ -408,7 +476,8 @@ function savePrefs() {
     localStorage.setItem('ryzoludzie.dashboard', JSON.stringify({
       url: els.url.value.trim(), what: els.what.value, natural: els.natural.checked,
       fell: els.fell.checked, split: els.split.checked, snap: els.snap.checked, showTerrain: els.showTerrain.checked,
-      target: els.target.value.trim(),
+      target: els.target.value.trim(), craftItem: els.craftItem.value.trim(), craftPlace: els.craftPlace.checked,
+      withdrawItem: els.withdrawItem.value.trim(),
     }));
   } catch (e) { /* jw. */ }
 }
@@ -556,6 +625,9 @@ function handleMessage(text) {
   state.pending.delete(msg.requestId);
   if (msg.ok) {
     log('ok', label || msg.type || 'OK');
+    if (Array.isArray(msg.steps)) {
+      log('info', 'Plan: ' + (msg.steps.length ? msg.steps.join(', ') : 'wszystko jest już w ekwipunku'));
+    }
     requestState();
   } else {
     log('err', (label ? label + ': ' : '') + (msg.error || 'nieznany błąd'));
@@ -563,6 +635,12 @@ function handleMessage(text) {
 }
 
 function applyState(msg) {
+  for (const u of msg.units || []) {
+    if (u.notice && u.notice.text) {
+      const kind = u.notice.level === 'warn' ? 'warn' : 'info';
+      log(kind, unitName(u) + ': ' + u.notice.text);
+    }
+  }
   const next = new Map();
   for (const u of msg.units || []) next.set(u.id, u);
   state.units = next;
@@ -641,9 +719,10 @@ function updateCard(card, u) {
   card.hpFill.style.width = (ratio * 100) + '%';
   card.hpFill.dataset.level = ratio > 0.5 ? 'high' : ratio > 0.25 ? 'mid' : 'low';
   card.hp.setAttribute('aria-label', 'Zdrowie ' + (u.health || 0) + ' z 20');
-  card.pos.textContent = 'x ' + Math.round(u.x) + ', y ' + Math.round(u.y) + ', z ' + Math.round(u.z);
+  card.pos.textContent = 'x ' + Math.round(u.x) + ', y ' + Math.round(u.y) + ', z ' + Math.round(u.z)
+    + (u.storage ? ' · magazyn x ' + u.storage.x + ', z ' + u.storage.z : '');
   const items = Object.entries(u.inventory || {}).map(([k, v]) => niceItem(k) + ' ' + v);
-  card.inv.textContent = items.length ? items.join(', ') : 'ekwipunek pusty';
+  card.inv.textContent = (u.tool ? 'w rączce ' + niceItem(u.tool) + '. ' : '') + (items.length ? items.join(', ') : 'ekwipunek pusty');
   card.main.setAttribute('aria-pressed', state.selected.has(u.id) ? 'true' : 'false');
 }
 
@@ -776,6 +855,27 @@ function splitArea(a, n) {
   return parts;
 }
 
+/* ------------------------------------------------------------------ miejsce budowy */
+
+function setPin(p) {
+  state.pin = p;
+  els.pinInfo.textContent = p
+    ? 'Miejsce budowy: x ' + p.x + ', z ' + p.z + '.'
+    : 'Miejsce budowy nie jest wskazane, blok stanie obok ryżoludzia.';
+  els.pinClear.disabled = !p;
+  scheduleDraw();
+}
+els.pinClear.addEventListener('click', () => setPin(null));
+
+function setStoragePin(p) {
+  state.storagePin = p;
+  els.storagePinInfo.textContent = p
+    ? 'Zaznaczona lokalizacja: x ' + p.x + ', z ' + p.z + '.'
+    : 'Nie wskazano magazynu na mapie.';
+  updateControls();
+  scheduleDraw();
+}
+
 /* ------------------------------------------------------------------ rozkazy */
 
 function commandMove(w) {
@@ -814,6 +914,49 @@ function sendHarvest() {
 }
 
 els.harvestBtn.addEventListener('click', sendHarvest);
+
+els.craftBtn.addEventListener('click', () => {
+  const item = els.craftItem.value.trim();
+  if (!item) { log('err', 'Wpisz przedmiot do wytworzenia.'); return; }
+  const count = Math.max(1, Math.min(64, parseInt(els.craftCount.value, 10) || 1));
+  const place = els.craftPlace.checked;
+  savePrefs();
+  for (const u of selectedUnits()) {
+    const m = { type: 'CRAFT', unit: u.id, item, count, place };
+    if (place && state.pin) { m.x = state.pin.x; m.z = state.pin.z; }
+    send(m, unitName(u) + ' wytwarza ' + count + ' × ' + item + (place ? ' i stawia' : ''));
+  }
+});
+els.placeBtn.addEventListener('click', () => {
+  const item = els.craftItem.value.trim();
+  if (!item) { log('err', 'Wpisz przedmiot do postawienia.'); return; }
+  savePrefs();
+  for (const u of selectedUnits()) {
+    const m = { type: 'PLACE', unit: u.id, item };
+    if (state.pin) { m.x = state.pin.x; m.z = state.pin.z; }
+    send(m, unitName(u) + ' stawia ' + item);
+  }
+});
+els.storageAssign.addEventListener('click', () => {
+  if (!state.storagePin) { log('info', 'Najpierw wskaż magazyn narzędziem Magazyn na mapie.'); return; }
+  for (const u of selectedUnits()) {
+    send({ type: 'SET_STORAGE', unit: u.id, x: state.storagePin.x, z: state.storagePin.z },
+      unitName(u) + ' ma teraz magazyn w x ' + state.storagePin.x + ', z ' + state.storagePin.z);
+  }
+});
+els.storageClear.addEventListener('click', () => {
+  for (const u of selectedUnits()) send({ type: 'SET_STORAGE', unit: u.id, clear: true }, unitName(u) + ' nie ma już magazynu');
+});
+els.depositBtn.addEventListener('click', () => {
+  for (const u of selectedUnits()) send({ type: 'DEPOSIT', unit: u.id }, unitName(u) + ' odkłada ekwipunek');
+});
+els.withdrawBtn.addEventListener('click', () => {
+  const item = els.withdrawItem.value.trim();
+  if (!item) { log('err', 'Wpisz przedmiot do pobrania.'); return; }
+  const count = Math.max(1, Math.min(64, parseInt(els.withdrawCount.value, 10) || 1));
+  savePrefs();
+  for (const u of selectedUnits()) send({ type: 'WITHDRAW', unit: u.id, item, count }, unitName(u) + ' pobiera ' + count + ' × ' + item);
+});
 els.gatherBtn.addEventListener('click', () => {
   for (const u of selectedUnits()) send({ type: 'GATHER', unit: u.id }, unitName(u) + ' zbiera przedmioty z ziemi');
 });
@@ -841,6 +984,12 @@ function updateControls() {
   els.gatherBtn.disabled = !(on && n > 0);
   els.attackBtn.disabled = !(on && n > 0);
   els.stopBtn.disabled = !(on && n > 0);
+  els.craftBtn.disabled = !(on && n > 0);
+  els.placeBtn.disabled = !(on && n > 0);
+  els.storageAssign.disabled = !(on && n > 0 && state.storagePin);
+  els.storageClear.disabled = !(on && n > 0);
+  els.depositBtn.disabled = !(on && n > 0);
+  els.withdrawBtn.disabled = !(on && n > 0);
 
   let hint = '';
   if (!on) hint = 'Najpierw połącz się z modem.';
@@ -1225,6 +1374,67 @@ function drawArea(a, preview) {
   ctx.restore();
 }
 
+function drawStorageMarker(x, z, dashed) {
+  const s = state.view.scale;
+  const bx = wx(x), by = wz(z);
+  ctx.save();
+  ctx.fillStyle = '#8a5a2b';
+  ctx.fillRect(bx + s * 0.15, by + s * 0.15, s * 0.7, s * 0.7);
+  ctx.lineWidth = dashed ? 2 : 1.5;
+  ctx.strokeStyle = COLORS.ink;
+  if (dashed) ctx.setLineDash([4, 3]);
+  ctx.strokeRect(bx + s * 0.15, by + s * 0.15, s * 0.7, s * 0.7);
+  ctx.restore();
+}
+
+function drawStorageLinks() {
+  for (const u of state.units.values()) {
+    if (!u.storage) continue;
+    ctx.save();
+    ctx.setLineDash([3, 5]);
+    ctx.strokeStyle = 'rgba(58, 143, 196, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(wx(u.x), wz(u.z));
+    ctx.lineTo(wx(u.storage.x + 0.5), wz(u.storage.z + 0.5));
+    ctx.stroke();
+    ctx.restore();
+    drawStorageMarker(u.storage.x, u.storage.z, false);
+  }
+  if (state.storagePin) drawStorageMarker(state.storagePin.x, state.storagePin.z, true);
+}
+
+function drawPin() {
+  if (!state.pin) return;
+  const s = state.view.scale;
+  const bx = wx(state.pin.x), by = wz(state.pin.z);
+  const x = bx + s / 2, y = by + s / 2;
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = COLORS.ink;
+  ctx.strokeRect(bx, by, s, s);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = COLORS.halo;
+  ctx.strokeRect(bx, by, s, s);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x, y - 24);
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = COLORS.ink;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x, y - 24);
+  ctx.lineTo(x + 15, y - 18);
+  ctx.lineTo(x, y - 12);
+  ctx.closePath();
+  ctx.fillStyle = '#c4703a';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = COLORS.ink;
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawUnitAreas() {
   const s = state.view.scale;
   for (const u of state.units.values()) {
@@ -1316,6 +1526,8 @@ function draw() {
 
   drawUnitAreas();
   if (state.area) drawArea(state.area, false);
+  drawStorageLinks();
+  drawPin();
   if (state.drag && state.drag.kind === 'rect' && state.drag.moved) {
     drawArea(areaFromPoints(state.drag.start, state.drag.cur, els.snap.checked), true);
   }
@@ -1372,6 +1584,14 @@ els.canvas.addEventListener('pointerdown', (e) => {
   }
   if (state.tool === 'spawn') {
     spawnAt(w);
+    return;
+  }
+  if (state.tool === 'pin') {
+    setPin({ x: Math.floor(w.x), z: Math.floor(w.z) });
+    return;
+  }
+  if (state.tool === 'storage') {
+    setStoragePin({ x: Math.floor(w.x), z: Math.floor(w.z) });
     return;
   }
 
@@ -1448,6 +1668,8 @@ document.addEventListener('keydown', (e) => {
     if (e.target === document.body || e.target === els.canvas) e.preventDefault();
   } else if (e.key === 'Escape') {
     setArea(null);
+    setPin(null);
+    setStoragePin(null);
     state.selected.clear();
     renderUnits();
     updateControls();
@@ -1461,6 +1683,9 @@ window.addEventListener('blur', () => { state.space = false; });
 
 els.connectBtn.addEventListener('click', () => { if (state.wantConnected) disconnect(); else connect(); });
 els.url.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !state.wantConnected) connect(); });
+for (const k of ['craftItem', 'craftPlace', 'withdrawItem']) {
+  els[k].addEventListener('change', savePrefs);
+}
 for (const k of ['what', 'natural', 'fell', 'split', 'snap', 'showTerrain']) {
   els[k].addEventListener('change', () => { savePrefs(); updateControls(); scheduleDraw(); });
 }

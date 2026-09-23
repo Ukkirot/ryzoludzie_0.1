@@ -11,6 +11,11 @@ import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 public final class RyzoludzieClientEvents {
 
     @SubscribeEvent
+    public static void registerLayers(EntityRenderersEvent.RegisterLayerDefinitions event) {
+        event.registerLayerDefinition(RiceManModel.LAYER, RiceManModel::createBodyLayer);
+    }
+
+    @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerEntityRenderer(ModEntities.RICEMAN.get(), RiceManRenderer::new);
     }

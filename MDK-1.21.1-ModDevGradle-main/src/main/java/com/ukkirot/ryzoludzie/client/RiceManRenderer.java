@@ -1,24 +1,20 @@
 package com.ukkirot.ryzoludzie.client;
 
+import com.ukkirot.ryzoludzie.RyzoludzieMod;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
-import net.minecraft.client.model.HumanoidModel;
-import net.minecraft.client.model.geom.ModelLayers;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
-import net.minecraft.client.renderer.entity.HumanoidMobRenderer;
+import net.minecraft.client.renderer.entity.MobRenderer;
+import net.minecraft.client.renderer.entity.layers.ItemInHandLayer;
 import net.minecraft.resources.ResourceLocation;
 
-/**
- * Humanoidalny model z tymczasową teksturą zombie.
- * Żeby dodać własną: wrzuć 64x64 PNG do
- * assets/ryzoludzie/textures/entity/riceman.png i zmień TEXTURE na
- * ResourceLocation.fromNamespaceAndPath("ryzoludzie", "textures/entity/riceman.png").
- */
-public class RiceManRenderer extends HumanoidMobRenderer<RiceManEntity, HumanoidModel<RiceManEntity>> {
+/** Renderer ryżoludzia: biały prostokąt z rączkami, trzymane narzędzie widać w rączce. */
+public class RiceManRenderer extends MobRenderer<RiceManEntity, RiceManModel> {
     private static final ResourceLocation TEXTURE =
-            ResourceLocation.withDefaultNamespace("textures/entity/zombie/zombie.png");
+            ResourceLocation.fromNamespaceAndPath(RyzoludzieMod.MODID, "textures/entity/riceman.png");
 
     public RiceManRenderer(EntityRendererProvider.Context context) {
-        super(context, new HumanoidModel<>(context.bakeLayer(ModelLayers.ZOMBIE)), 0.5F);
+        super(context, new RiceManModel(context.bakeLayer(RiceManModel.LAYER)), 0.3F);
+        this.addLayer(new ItemInHandLayer<>(this, context.getItemInHandRenderer()));
     }
 
     @Override
