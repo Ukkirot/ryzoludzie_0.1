@@ -5,11 +5,17 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
 import com.ukkirot.ryzoludzie.crafting.RiceCrafter;
+import com.ukkirot.ryzoludzie.entity.ContainerTransfer;
 import com.ukkirot.ryzoludzie.entity.HarvestArea;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
 import com.ukkirot.ryzoludzie.registry.ModEntities;
+import com.ukkirot.ryzoludzie.structure.StructureLoader;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -30,9 +36,16 @@ import net.minecraft.world.phys.AABB;
 import org.slf4j.Logger;
 
 import javax.annotation.Nullable;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -62,6 +75,14 @@ import java.util.UUID;
  * {"type":"SET_STORAGE","unit":"&lt;uuid&gt;","clear":true}            (odpina magazyn)
  * {"type":"DEPOSIT","unit":"&lt;uuid&gt;"[,"resume":false]}            (odkłada cały ekwipunek poza narzędziem)
  * {"type":"WITHDRAW","unit":"&lt;uuid&gt;","item":"minecraft:oak_planks"[,"count":64]}
+ * {"type":"UPLOAD_STRUCTURE","name":"dom.nbt","data":"&lt;base64&gt;"}   (zapisuje strukturę do folderu ryzoludzie_structures)
+ * {"type":"LIST_STRUCTURES"}                                       (lista dostępnych struktur .nbt, z rozmiarem w blokach)
+ * {"type":"CHECK_STRUCTURE","unit":"&lt;uuid&gt;","name":"dom.nbt","x":..,"z":..[,"y":..]}
+ *   podgląd bez rozkazu: typ drewna dobrany pod biom w (x,y,z), potrzebne materiały i czy
+ *   ekwipunek jednostki + jej magazyn (jeśli przypisany) mają ich wystarczająco
+ * {"type":"BUILD_STRUCTURE","unit":"&lt;uuid&gt;","name":"dom.nbt","x":..,"z":..[,"y":..]}
+ *   jak CHECK_STRUCTURE, ale gdy materiałów starcza: dociąga brakujące z magazynu do ekwipunku
+ *   i każe jednostce zbudować strukturę (typ drewna dobrany pod biom w miejscu budowy)
  * {"type":"STOP","unit":"&lt;uuid&gt;"}
  * </pre>
  */
@@ -93,6 +114,10 @@ public final class RiceManBridge {
                     case "SET_STORAGE" -> setStorage(server, msg);
                     case "DEPOSIT" -> deposit(server, msg);
                     case "WITHDRAW" -> withdraw(server, msg);
+                    case "UPLOAD_STRUCTURE" -> uploadStructure(server, msg);
+                    case "LIST_STRUCTURES" -> listStructures(server);
+                    case "CHECK_STRUCTURE" -> checkStructure(server, msg);
+                    case "BUILD_STRUCTURE" -> buildStructure(server, msg);
                     case "STOP" -> stop(server, msg);
                     default -> throw new IllegalArgumentException("Unknown command type: " + type);
                 };
@@ -530,6 +555,222 @@ public final class RiceManBridge {
         RiceManEntity unit = requireUnit(server, msg);
         unit.commandStop();
         return ack("STOP", unit);
+    }
+
+    // ---------------------------------------------------------------- struktury (.nbt)
+
+    private static final long MAX_STRUCTURE_BYTES = 4L * 1024 * 1024; // 4 MB
+
+    private static Path structuresDir(MinecraftServer server) {
+        Path dir = server.getServerDirectory().resolve("ryzoludzie_structures");
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            throw new IllegalStateException("Nie można utworzyć folderu struktur: " + dir, e);
+        }
+        return dir;
+    }
+
+    private static JsonObject uploadStructure(MinecraftServer server, JsonObject msg) {
+        String name = sanitizeStructureName(requireString(msg, "name"));
+        byte[] bytes;
+        try {
+            bytes = Base64.getDecoder().decode(requireString(msg, "data"));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Field 'data' is not valid base64");
+        }
+        if (bytes.length == 0) {
+            throw new IllegalArgumentException("Uploaded structure is empty");
+        }
+        if (bytes.length > MAX_STRUCTURE_BYTES) {
+            throw new IllegalArgumentException("Structure too large (max " + (MAX_STRUCTURE_BYTES / 1024 / 1024) + " MB)");
+        }
+
+        int[] size = readStructureSize(parseStructureNbt(bytes));
+
+        Path target = structuresDir(server).resolve(name);
+        try {
+            Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to save structure to disk: " + e.getMessage());
+        }
+
+        JsonObject res = ok("UPLOAD_STRUCTURE");
+        res.addProperty("name", name);
+        res.addProperty("bytes", bytes.length);
+        res.add("size", sizeArray(size));
+        return res;
+    }
+
+    private static JsonObject listStructures(MinecraftServer server) {
+        Path dir = structuresDir(server);
+        JsonArray list = new JsonArray();
+        try (var stream = Files.list(dir)) {
+            stream.filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".nbt"))
+                    .sorted()
+                    .forEach(p -> {
+                        JsonObject o = new JsonObject();
+                        o.addProperty("name", p.getFileName().toString());
+                        try {
+                            o.addProperty("bytes", Files.size(p));
+                            int[] size = readStructureSize(parseStructureNbt(Files.readAllBytes(p)));
+                            if (size != null) {
+                                o.add("size", sizeArray(size));
+                            }
+                        } catch (IOException | RuntimeException ignored) {
+                            // uszkodzony/nieodczytywalny plik - pomijamy rozmiar, nazwa i tak trafia na listę
+                        }
+                        list.add(o);
+                    });
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to list structures: " + e.getMessage());
+        }
+        JsonObject res = ok("LIST_STRUCTURES");
+        res.add("structures", list);
+        return res;
+    }
+
+    private static CompoundTag parseStructureNbt(byte[] bytes) {
+        try (InputStream in = new ByteArrayInputStream(bytes)) {
+            return NbtIo.readCompressed(in, NbtAccounter.unlimitedHeap());
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Not a valid (gzip-compressed) NBT structure file: " + e.getMessage());
+        }
+    }
+
+    @Nullable
+    private static int[] readStructureSize(CompoundTag tag) {
+        if (!tag.contains("size") || !tag.contains("blocks") || !tag.contains("palette")) {
+            throw new IllegalArgumentException("File doesn't look like a Minecraft structure (missing 'size'/'blocks'/'palette')");
+        }
+        if (!(tag.get("size") instanceof ListTag sizeList) || sizeList.size() != 3) {
+            return null;
+        }
+        return new int[]{sizeList.getInt(0), sizeList.getInt(1), sizeList.getInt(2)};
+    }
+
+    private static JsonArray sizeArray(@Nullable int[] size) {
+        JsonArray arr = new JsonArray();
+        if (size != null) {
+            arr.add(size[0]);
+            arr.add(size[1]);
+            arr.add(size[2]);
+        }
+        return arr;
+    }
+
+    private static String sanitizeStructureName(String raw) {
+        String name = raw.trim().replace('\\', '/');
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            name = name.substring(slash + 1); // odrzuć ewentualną ścieżkę, zostaw samą nazwę pliku
+        }
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".nbt")) {
+            name = name + ".nbt";
+        }
+        if (!name.matches("[A-Za-z0-9_\\-. ]+\\.nbt")) {
+            throw new IllegalArgumentException("Structure name contains invalid characters");
+        }
+        return name;
+    }
+
+    private static JsonObject checkStructure(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        String name = requireString(msg, "name");
+        BlockPos origin = posOrSurface(level, msg);
+        StructureLoader.LoadResult loaded = StructureLoader.load(server, name, level, origin);
+
+        Container storage = storageContainerOf(unit);
+        Map<Item, Integer> have = ContainerTransfer.stockOf(unit.getInventory());
+        Map<Item, Integer> storageStock = storage != null ? ContainerTransfer.stockOf(storage) : Map.<Item, Integer>of();
+
+        JsonArray materials = new JsonArray();
+        boolean materialsOk = true;
+        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
+            int total = have.getOrDefault(need.getKey(), 0) + storageStock.getOrDefault(need.getKey(), 0);
+            boolean enough = total >= need.getValue();
+            materialsOk &= enough;
+            JsonObject m = new JsonObject();
+            m.addProperty("item", itemName(need.getKey()));
+            m.addProperty("needed", need.getValue());
+            m.addProperty("have", total);
+            m.addProperty("ok", enough);
+            materials.add(m);
+        }
+
+        JsonObject res = ok("CHECK_STRUCTURE");
+        res.add("size", sizeArray(loaded.size()));
+        res.addProperty("blocks", loaded.blocks().size());
+        res.addProperty("materialsOk", materialsOk);
+        res.add("materials", materials);
+        return res;
+    }
+
+    private static JsonObject buildStructure(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        String name = requireString(msg, "name");
+        BlockPos origin = posOrSurface(level, msg);
+        StructureLoader.LoadResult loaded = StructureLoader.load(server, name, level, origin);
+
+        Container storage = storageContainerOf(unit);
+        Map<Item, Integer> have = ContainerTransfer.stockOf(unit.getInventory());
+        Map<Item, Integer> storageStock = storage != null ? ContainerTransfer.stockOf(storage) : Map.<Item, Integer>of();
+
+        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
+            int total = have.getOrDefault(need.getKey(), 0) + storageStock.getOrDefault(need.getKey(), 0);
+            if (total < need.getValue()) {
+                throw new IllegalArgumentException("Cannot build " + name + ": missing "
+                        + (need.getValue() - total) + "x " + itemName(need.getKey()));
+            }
+        }
+
+        // Dociągnij z magazynu to, czego brakuje we własnym ekwipunku - jednorazowo, przed startem budowy.
+        if (storage != null) {
+            for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
+                int deficit = need.getValue() - have.getOrDefault(need.getKey(), 0);
+                if (deficit <= 0) {
+                    continue;
+                }
+                ItemStack taken = ContainerTransfer.takeUpTo(storage, need.getKey(), deficit);
+                if (taken.isEmpty()) {
+                    continue;
+                }
+                ItemStack left = unit.getInventory().addItem(taken);
+                if (!left.isEmpty()) {
+                    ContainerTransfer.mergeInto(storage, left); // ekwipunek pełny, reszta wraca do magazynu
+                }
+            }
+        }
+
+        Map<Item, Integer> haveNow = ContainerTransfer.stockOf(unit.getInventory());
+        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
+            if (haveNow.getOrDefault(need.getKey(), 0) < need.getValue()) {
+                throw new IllegalArgumentException("Cannot build " + name
+                        + ": not enough room in the unit's inventory to carry all materials");
+            }
+        }
+
+        unit.commandBuild(name, origin);
+
+        JsonObject res = ack("BUILD_STRUCTURE", unit);
+        res.add("size", sizeArray(loaded.size()));
+        res.addProperty("blocks", loaded.blocks().size());
+        return res;
+    }
+
+    @Nullable
+    private static Container storageContainerOf(RiceManEntity unit) {
+        BlockPos chest = unit.getStorageChest();
+        if (chest == null || !(unit.level() instanceof ServerLevel level) || !level.isLoaded(chest)) {
+            return null;
+        }
+        return level.getBlockEntity(chest) instanceof Container c ? c : null;
     }
 
     // ---------------------------------------------------------------- wyszukiwanie

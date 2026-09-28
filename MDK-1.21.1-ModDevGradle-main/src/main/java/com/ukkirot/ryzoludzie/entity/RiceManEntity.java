@@ -1,5 +1,6 @@
 package com.ukkirot.ryzoludzie.entity;
 
+import com.ukkirot.ryzoludzie.entity.ai.BuildStructureGoal;
 import com.ukkirot.ryzoludzie.entity.ai.CraftGoal;
 import com.ukkirot.ryzoludzie.entity.ai.GatherItemsGoal;
 import com.ukkirot.ryzoludzie.entity.ai.HarvestBlocksGoal;
@@ -44,7 +45,7 @@ import javax.annotation.Nullable;
  */
 public class RiceManEntity extends PathfinderMob {
 
-    public enum Command {IDLE, MOVE, ATTACK, GATHER, HARVEST, CRAFT, PLACE, DEPOSIT, WITHDRAW}
+    public enum Command {IDLE, MOVE, ATTACK, GATHER, HARVEST, CRAFT, PLACE, DEPOSIT, WITHDRAW, BUILD}
 
     /** Co ma zbierać komenda HARVEST. */
     public enum HarvestMode {
@@ -93,6 +94,12 @@ public class RiceManEntity extends PathfinderMob {
     @Nullable
     private BlockPos placePos;
 
+    // BUILD: nazwa pliku struktury (.nbt) i róg (origin), od którego liczone są względne pozycje bloków.
+    @Nullable
+    private String buildStructure;
+    @Nullable
+    private BlockPos buildOrigin;
+
     // Magazyn: dowolny Container (skrzynia, beczka), do którego jednostka odkłada i z którego pobiera.
     @Nullable
     private BlockPos storageChest;
@@ -135,6 +142,7 @@ public class RiceManEntity extends PathfinderMob {
         this.goalSelector.addGoal(3, new CraftGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new PlaceBlockGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new StorageGoal(this, 1.0D));
+        this.goalSelector.addGoal(3, new BuildStructureGoal(this, 1.0D));
         this.goalSelector.addGoal(4, new IdleStrollGoal(this, 0.8D));
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));
         this.goalSelector.addGoal(6, new RandomLookAroundGoal(this));
@@ -208,6 +216,26 @@ public class RiceManEntity extends PathfinderMob {
         this.placePos = pos != null ? pos.immutable() : null;
         this.commandPos = null;
         this.getNavigation().stop();
+    }
+
+    /** Buduje strukturę (.nbt) z materiałów w ekwipunku, stawiając bloki jeden po drugim od origin. */
+    public void commandBuild(String structureName, BlockPos origin) {
+        this.setTarget(null);
+        this.command = Command.BUILD;
+        this.buildStructure = structureName;
+        this.buildOrigin = origin.immutable();
+        this.commandPos = null;
+        this.getNavigation().stop();
+    }
+
+    @Nullable
+    public String getBuildStructure() {
+        return buildStructure;
+    }
+
+    @Nullable
+    public BlockPos getBuildOrigin() {
+        return buildOrigin;
     }
 
     /** Przypisuje magazyn (dowolny Container pod tą pozycją) albo null, żeby go odpiąć. */
@@ -405,6 +433,12 @@ public class RiceManEntity extends PathfinderMob {
         if (placePos != null) {
             tag.putIntArray("RcPlacePos", new int[]{placePos.getX(), placePos.getY(), placePos.getZ()});
         }
+        if (buildStructure != null) {
+            tag.putString("RcBuildStructure", buildStructure);
+        }
+        if (buildOrigin != null) {
+            tag.putIntArray("RcBuildOrigin", new int[]{buildOrigin.getX(), buildOrigin.getY(), buildOrigin.getZ()});
+        }
         if (storageChest != null) {
             tag.putIntArray("RcStorageChest", new int[]{storageChest.getX(), storageChest.getY(), storageChest.getZ()});
         }
@@ -440,6 +474,9 @@ public class RiceManEntity extends PathfinderMob {
         this.placeItem = readItem(tag, "RcPlaceItem");
         int[] pp = tag.getIntArray("RcPlacePos");
         this.placePos = pp.length == 3 ? new BlockPos(pp[0], pp[1], pp[2]) : null;
+        this.buildStructure = tag.contains("RcBuildStructure") ? tag.getString("RcBuildStructure") : null;
+        int[] bo = tag.getIntArray("RcBuildOrigin");
+        this.buildOrigin = bo.length == 3 ? new BlockPos(bo[0], bo[1], bo[2]) : null;
         int[] sc = tag.getIntArray("RcStorageChest");
         this.storageChest = sc.length == 3 ? new BlockPos(sc[0], sc[1], sc[2]) : null;
         this.depositResume = tag.getBoolean("RcDepositResume");
@@ -454,6 +491,9 @@ public class RiceManEntity extends PathfinderMob {
             this.command = Command.IDLE;
         }
         if (this.command == Command.PLACE && this.placeItem == null) {
+            this.command = Command.IDLE;
+        }
+        if (this.command == Command.BUILD && (this.buildStructure == null || this.buildOrigin == null)) {
             this.command = Command.IDLE;
         }
         if (this.command == Command.DEPOSIT && this.storageChest == null) {

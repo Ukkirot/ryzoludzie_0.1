@@ -335,6 +335,23 @@ h2 { font: 700 17px/1.2 var(--serif); }
     </div>
 
     <div class="section">
+      <h2>Struktury (.nbt)</h2>
+      <label class="field"><span>Wgraj plik struktury</span>
+        <input id="structureFile" type="file" accept=".nbt">
+      </label>
+      <button type="button" class="btn primary" id="structureUploadBtn" disabled>Wgraj strukturę</button>
+      <label class="field"><span>Dostępne struktury</span>
+        <select id="structureList"><option value="">— brak —</option></select>
+      </label>
+      <p class="hint" id="structureHint">Najpierw połącz się z modem.</p>
+      <div class="row">
+        <button type="button" class="btn small" id="structureCheckBtn" disabled>Sprawdź materiały</button>
+        <button type="button" class="btn primary" id="structureBuildBtn" disabled>Zbuduj</button>
+      </div>
+      <p class="hint" id="structureBuildHint">Zaznacz jednostki, wybierz strukturę i wskaż Miejsce budowy na mapie.</p>
+    </div>
+
+    <div class="section">
       <h2>Magazyn</h2>
       <p class="hint" id="storagePinInfo">Nie wskazano magazynu na mapie.</p>
       <div class="row">
@@ -395,6 +412,10 @@ const els = {
   craftBtn: $('craftBtn'), placeBtn: $('placeBtn'), pinInfo: $('pinInfo'), pinClear: $('pinClear'),
   storagePinInfo: $('storagePinInfo'), storageAssign: $('storageAssign'), storageClear: $('storageClear'),
   depositBtn: $('depositBtn'), withdrawItem: $('withdrawItem'), withdrawCount: $('withdrawCount'), withdrawBtn: $('withdrawBtn'),
+  structureFile: $('structureFile'), structureUploadBtn: $('structureUploadBtn'),
+  structureList: $('structureList'), structureHint: $('structureHint'),
+  structureCheckBtn: $('structureCheckBtn'), structureBuildBtn: $('structureBuildBtn'),
+  structureBuildHint: $('structureBuildHint'),
   logList: $('logList'),
 };
 const toolButtons = Array.from(document.querySelectorAll('[data-tool]'));
@@ -453,6 +474,8 @@ const state = {
   terrainId: 0,
   terrainSupported: true,
   minY: -64,
+  structureFile: null,
+  structures: [],
 };
 
 /* ------------------------------------------------------------------ zapis ustawień */
@@ -538,6 +561,7 @@ function connect() {
     setStatus('on');
     log('ok', 'Połączono z ' + url);
     startPolling();
+    requestStructureList();
   };
   ws.onmessage = (e) => handleMessage(String(e.data));
   ws.onerror = () => { /* zaraz przyjdzie onclose */ };
@@ -580,6 +604,59 @@ function stopPolling() {
 function requestState() {
   if (!connected()) return;
   state.ws.send(JSON.stringify({ type: 'GET_STATE', requestId: 'p' + (++state.pollId) }));
+}
+
+function reportStructureMaterials(msg) {
+  const size = Array.isArray(msg.size) && msg.size.length === 3 ? msg.size.join(' × ') + ' bloków, ' : '';
+  log(msg.materialsOk ? 'ok' : 'warn',
+    size + (msg.blocks != null ? msg.blocks + ' do postawienia, ' : '') +
+    (msg.materialsOk ? 'materiałów wystarczy' : 'brakuje materiałów'));
+  for (const m of msg.materials || []) {
+    if (!m.ok) log('warn', '  brakuje: ' + niceItem(m.item) + ' (' + m.have + ' / ' + m.needed + ')');
+  }
+}
+
+function requestStructureList() {
+  if (!connected()) return;
+  send({ type: 'LIST_STRUCTURES' }, 'Lista struktur');
+}
+
+function applyStructureList(list) {
+  state.structures = list;
+  const prev = els.structureList.value;
+  els.structureList.innerHTML = '';
+  if (!list.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— brak —';
+    els.structureList.appendChild(opt);
+  } else {
+    for (const s of list) {
+      const opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = s.name + (Array.isArray(s.size) ? ' (' + s.size.join('×') + ')' : '');
+      els.structureList.appendChild(opt);
+    }
+    if (list.some((s) => s.name === prev)) els.structureList.value = prev;
+  }
+  els.structureHint.textContent = connected()
+    ? (list.length
+        ? list.length + ' ' + plural(list.length, 'struktura', 'struktury', 'struktur') + ' dostępne do budowy.'
+        : 'Brak wgranych struktur. Wgraj plik .nbt powyżej.')
+    : 'Najpierw połącz się z modem.';
+}
+
+function uploadStructure() {
+  const file = state.structureFile;
+  if (!file) { log('err', 'Wybierz plik .nbt do wgrania.'); return; }
+  const reader = new FileReader();
+  reader.onerror = () => log('err', 'Nie udało się odczytać pliku ' + file.name);
+  reader.onload = () => {
+    const base64 = String(reader.result).split(',')[1] || '';
+    send({ type: 'UPLOAD_STRUCTURE', name: file.name, data: base64 },
+      'Wgrywanie struktury ' + file.name);
+  };
+  reader.readAsDataURL(file);
 }
 
 function send(obj, label) {
@@ -627,6 +704,16 @@ function handleMessage(text) {
     log('ok', label || msg.type || 'OK');
     if (Array.isArray(msg.steps)) {
       log('info', 'Plan: ' + (msg.steps.length ? msg.steps.join(', ') : 'wszystko jest już w ekwipunku'));
+    }
+    if (msg.type === 'UPLOAD_STRUCTURE') {
+      if (Array.isArray(msg.size) && msg.size.length === 3) {
+        log('info', 'Rozmiar struktury: ' + msg.size.join(' × ') + ' bloków');
+      }
+      requestStructureList();
+    } else if (msg.type === 'CHECK_STRUCTURE' || msg.type === 'BUILD_STRUCTURE') {
+      reportStructureMaterials(msg);
+    } else if (msg.type === 'LIST_STRUCTURES') {
+      applyStructureList(msg.structures || []);
     }
     requestState();
   } else {
@@ -863,6 +950,7 @@ function setPin(p) {
     ? 'Miejsce budowy: x ' + p.x + ', z ' + p.z + '.'
     : 'Miejsce budowy nie jest wskazane, blok stanie obok ryżoludzia.';
   els.pinClear.disabled = !p;
+  updateControls();
   scheduleDraw();
 }
 els.pinClear.addEventListener('click', () => setPin(null));
@@ -937,6 +1025,30 @@ els.placeBtn.addEventListener('click', () => {
     send(m, unitName(u) + ' stawia ' + item);
   }
 });
+els.structureFile.addEventListener('change', () => {
+  state.structureFile = els.structureFile.files[0] || null;
+  updateControls();
+});
+els.structureUploadBtn.addEventListener('click', uploadStructure);
+els.structureList.addEventListener('change', updateControls);
+els.structureCheckBtn.addEventListener('click', () => {
+  const name = els.structureList.value;
+  if (!name) { log('err', 'Wybierz strukturę z listy.'); return; }
+  if (!state.pin) { log('err', 'Najpierw wskaż Miejsce budowy na mapie.'); return; }
+  for (const u of selectedUnits()) {
+    send({ type: 'CHECK_STRUCTURE', unit: u.id, name, x: state.pin.x, z: state.pin.z },
+      unitName(u) + ' sprawdza materiały na ' + name);
+  }
+});
+els.structureBuildBtn.addEventListener('click', () => {
+  const name = els.structureList.value;
+  if (!name) { log('err', 'Wybierz strukturę z listy.'); return; }
+  if (!state.pin) { log('err', 'Najpierw wskaż Miejsce budowy na mapie.'); return; }
+  for (const u of selectedUnits()) {
+    send({ type: 'BUILD_STRUCTURE', unit: u.id, name, x: state.pin.x, z: state.pin.z },
+      unitName(u) + ' buduje ' + name);
+  }
+});
 els.storageAssign.addEventListener('click', () => {
   if (!state.storagePin) { log('info', 'Najpierw wskaż magazyn narzędziem Magazyn na mapie.'); return; }
   for (const u of selectedUnits()) {
@@ -990,6 +1102,20 @@ function updateControls() {
   els.storageClear.disabled = !(on && n > 0);
   els.depositBtn.disabled = !(on && n > 0);
   els.withdrawBtn.disabled = !(on && n > 0);
+  els.structureUploadBtn.disabled = !(on && state.structureFile);
+  els.structureList.disabled = !on;
+  if (!on) els.structureHint.textContent = 'Najpierw połącz się z modem.';
+
+  const structureName = els.structureList.value;
+  const structureReady = on && n > 0 && !!structureName && !!state.pin;
+  els.structureCheckBtn.disabled = !structureReady;
+  els.structureBuildBtn.disabled = !structureReady;
+  let buildHint = '';
+  if (!on) buildHint = 'Najpierw połącz się z modem.';
+  else if (n === 0) buildHint = 'Zaznacz jednostki.';
+  else if (!structureName) buildHint = 'Wybierz strukturę z listy.';
+  else if (!state.pin) buildHint = 'Wskaż Miejsce budowy na mapie.';
+  els.structureBuildHint.textContent = buildHint;
 
   let hint = '';
   if (!on) hint = 'Najpierw połącz się z modem.';

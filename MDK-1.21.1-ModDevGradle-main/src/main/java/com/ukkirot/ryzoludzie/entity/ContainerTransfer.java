@@ -4,6 +4,9 @@ import net.minecraft.world.Container;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /** Przenoszenie przedmiotów między ekwipunkiem jednostki a dowolnym Containerem (skrzynia, beczka, ...). */
 public final class ContainerTransfer {
     private ContainerTransfer() {
@@ -63,5 +66,17 @@ public final class ContainerTransfer {
         }
         target.setChanged();
         return result;
+    }
+
+    /** Sumuje zawartość dowolnego Containera (ekwipunku jednostki albo skrzyni) po przedmiotach. */
+    public static Map<Item, Integer> stockOf(Container container) {
+        Map<Item, Integer> stock = new HashMap<>();
+        for (int i = 0; i < container.getContainerSize(); i++) {
+            ItemStack s = container.getItem(i);
+            if (!s.isEmpty()) {
+                stock.merge(s.getItem(), s.getCount(), Integer::sum);
+            }
+        }
+        return stock;
     }
 }
