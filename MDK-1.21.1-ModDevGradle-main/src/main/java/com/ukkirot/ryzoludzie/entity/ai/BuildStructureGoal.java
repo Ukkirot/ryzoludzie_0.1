@@ -1,54 +1,32 @@
 package com.ukkirot.ryzoludzie.entity.ai;
 
 import com.ukkirot.ryzoludzie.RyzoludzieMod;
-import com.ukkirot.ryzoludzie.crafting.RiceCrafter;
+import com.ukkirot.ryzoludzie.entity.ContainerTransfer;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
 import com.ukkirot.ryzoludzie.structure.StructureLoader;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.Container;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.level.block.Block;
+import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.pathfinder.Path;
-import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
-import java.util.EnumSet;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
-/**
- * Realizuje komendę BUILD: stawia bloki wczytanej struktury jeden po drugim (od dołu w górę,
- * jak je uporządkował StructureLoader), zużywając odpowiadające przedmioty z ekwipunku. Materiały
- * są sprawdzane i ściągane z magazynu z góry przez RiceManBridge, więc ten goal tylko stawia -
- * gdy mimo to czegoś zabraknie (np. materiał zużyty przez inne zlecenie w międzyczasie), przerywa
- * z komunikatem, zamiast chodzić po dokładki.
- * <p>
- * Blok już stojący w docelowym stanie jest pomijany bez zużycia materiału - dzięki temu wznowienie
- * przerwanej budowy (np. po restarcie serwera) nie stawia niczego drugi raz.
- */
+/** Places a whole structure at its destination, taking materials from the unit and its storage. */
 public class BuildStructureGoal extends Goal {
-    private static final double REACH_SQR = 12.25D; // 3,5 bloku
-    private static final int WORK_TICKS_PER_BLOCK = 10;
-    private static final int GIVE_UP_TICKS = 20 * 15;
-
     private final RiceManEntity mob;
-    private final double speedModifier;
-
-    private List<StructureLoader.PlacementBlock> blocks = List.of();
-    private int index;
-    private int workTicks;
-    private int ticksOnTarget;
-    private int repathCooldown;
 
     public BuildStructureGoal(RiceManEntity mob, double speedModifier) {
         this.mob = mob;
-        this.speedModifier = speedModifier;
-        this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK));
     }
 
     @Override
@@ -63,33 +41,102 @@ public class BuildStructureGoal extends Goal {
     }
 
     @Override
-    public boolean requiresUpdateEveryTick() {
-        return true;
-    }
-
-    @Override
     public void start() {
-        blocks = List.of();
-        index = 0;
-        workTicks = 0;
-        ticksOnTarget = 0;
-        repathCooldown = 0;
-
         String name = mob.getBuildStructure();
         BlockPos origin = mob.getBuildOrigin();
         if (name == null || origin == null || !(mob.level() instanceof ServerLevel level)) {
-            mob.finishCommand();
+            fail(name, "dane budowy są niekompletne");
             return;
         }
+
+        StructureLoader.LoadResult loaded;
         try {
-            blocks = StructureLoader.load(level.getServer(), name, level, origin).blocks();
+            loaded = StructureLoader.load(level.getServer(), name, level, origin);
         } catch (IllegalArgumentException e) {
             fail(name, e.getMessage());
             return;
         }
-        if (blocks.isEmpty()) {
-            mob.finishCommand();
+
+        Map<Item, Integer> required = new LinkedHashMap<>();
+        Map<BlockPos, BlockState> originals = new LinkedHashMap<>();
+        for (StructureLoader.PlacementBlock block : loaded.blocks()) {
+            BlockPos pos = block.worldPos();
+            if (!level.isLoaded(pos)) {
+                fail(name, "obszar budowy jest poza załadowanym terenem przy " + pos);
+                return;
+            }
+            BlockState previous = level.getBlockState(pos);
+            if (previous.equals(block.state())) {
+                continue;
+            }
+            originals.put(pos, previous);
+            Item item = block.state().getBlock().asItem();
+            if (item != Items.AIR) {
+                required.merge(item, 1, Integer::sum);
+            }
         }
+
+        BlockPos storagePos = mob.getStorageChest();
+        Container storage = null;
+        if (storagePos != null) {
+            if (!level.isLoaded(storagePos)) {
+                fail(name, "przypisany magazyn jest poza załadowanym terenem");
+                return;
+            }
+            storage = ContainerTransfer.containerAt(level, storagePos);
+            if (storage == null) {
+                fail(name, "w przypisanym miejscu nie ma już magazynu");
+                return;
+            }
+        }
+
+        Container inventory = mob.getInventory();
+        Map<Item, Integer> inventoryStock = ContainerTransfer.stockOf(inventory);
+        Map<Item, Integer> storageStock = storage != null
+                ? ContainerTransfer.stockOf(storage) : Map.of();
+        for (Map.Entry<Item, Integer> entry : required.entrySet()) {
+            int inInventory = inventoryStock.getOrDefault(entry.getKey(), 0);
+            int inStorage = storageStock.getOrDefault(entry.getKey(), 0);
+            if (inInventory + inStorage < entry.getValue()) {
+                fail(name, "brakuje " + (entry.getValue() - inInventory - inStorage) + "x "
+                        + itemName(entry.getKey()) + " (ekwipunek: " + inInventory
+                        + ", magazyn: " + inStorage + ")");
+                return;
+            }
+        }
+
+        List<Debit> debits = new ArrayList<>();
+        for (Map.Entry<Item, Integer> entry : required.entrySet()) {
+            int remaining = take(inventory, entry.getKey(), entry.getValue(), debits);
+            if (remaining > 0 && storage != null) {
+                remaining = take(storage, entry.getKey(), remaining, debits);
+            }
+            if (remaining > 0) {
+                restore(debits);
+                fail(name, "zmieniła się ilość " + itemName(entry.getKey())
+                        + " podczas przygotowania budowy");
+                return;
+            }
+        }
+
+        List<BlockPos> placed = new ArrayList<>();
+        for (StructureLoader.PlacementBlock block : loaded.blocks()) {
+            BlockPos pos = block.worldPos();
+            if (level.getBlockState(pos).equals(block.state())) {
+                continue;
+            }
+            if (!level.setBlock(pos, block.state(), 3)) {
+                boolean restored = rollback(level, originals, placed);
+                restore(debits);
+                fail(name, "nie udało się postawić bloku przy " + pos
+                        + (restored ? "" : "; nie wszystkie wcześniejsze bloki udało się cofnąć"));
+                return;
+            }
+            placed.add(pos);
+        }
+
+        mob.getNavigation().stop();
+        mob.finishCommand();
     }
 
     @Override
@@ -97,83 +144,49 @@ public class BuildStructureGoal extends Goal {
         mob.getNavigation().stop();
     }
 
-    @Override
-    public void tick() {
-        if (!(mob.level() instanceof ServerLevel level)) {
-            return;
+    private static int take(Container source, Item item, int count, List<Debit> debits) {
+        ItemStack taken = ContainerTransfer.takeUpTo(source, item, count);
+        if (!taken.isEmpty()) {
+            debits.add(new Debit(source, taken));
         }
-        if (index >= blocks.size()) {
-            mob.finishCommand();
-            return;
-        }
-        StructureLoader.PlacementBlock target = blocks.get(index);
-        BlockPos pos = target.worldPos();
-
-        if (!level.isLoaded(pos)) {
-            fail(mob.getBuildStructure(), "obszar budowy jest poza załadowanym terenem");
-            return;
-        }
-        if (level.getBlockState(pos).equals(target.state())) {
-            index++; // ten blok już stoi (np. wznowienie po restarcie) - nic do zrobienia
-            ticksOnTarget = 0;
-            workTicks = 0;
-            return;
-        }
-
-        if (++ticksOnTarget > GIVE_UP_TICKS) {
-            fail(mob.getBuildStructure(), "nie da się dojść do miejsca budowy");
-            return;
-        }
-
-        Vec3 center = Vec3.atCenterOf(pos);
-        if (mob.distanceToSqr(center) > REACH_SQR) {
-            if (--repathCooldown <= 0) {
-                repathCooldown = 10;
-                Path path = mob.getNavigation().createPath(pos, 1);
-                if (path == null) {
-                    fail(mob.getBuildStructure(), "nie da się dojść do miejsca budowy");
-                    return;
-                }
-                mob.getNavigation().moveTo(path, speedModifier);
-            }
-            return;
-        }
-
-        mob.getNavigation().stop();
-        mob.getLookControl().setLookAt(center.x, center.y, center.z);
-        workTicks++;
-        if (workTicks % 6 == 1) {
-            mob.swing(InteractionHand.MAIN_HAND);
-        }
-        if (workTicks < WORK_TICKS_PER_BLOCK) {
-            return;
-        }
-
-        if (!placeBlock(level, pos, target.state())) {
-            return; // fail() już ustawił notice i zakończył komendę
-        }
-        index++;
-        workTicks = 0;
-        ticksOnTarget = 0;
+        return count - taken.getCount();
     }
 
-    /** Zużywa 1 sztukę materiału (jeśli blok w ogóle ma formę przedmiotu) i stawia blok. */
-    private boolean placeBlock(ServerLevel level, BlockPos pos, BlockState state) {
-        Item item = state.getBlock().asItem();
-        boolean needsItem = item != Items.AIR;
-        if (needsItem && !RiceCrafter.takeOne(mob, item)) {
-            fail(mob.getBuildStructure(), "zabrakło " + BuiltInRegistries.ITEM.getKey(item) + " w ekwipunku");
-            return false;
+    private void restore(List<Debit> debits) {
+        for (Debit debit : debits) {
+            ItemStack remaining = ContainerTransfer.mergeInto(debit.source(), debit.stack());
+            if (!remaining.isEmpty()) {
+                RyzoludzieMod.LOGGER.error("Could not restore BUILD materials to their source: {}",
+                        remaining);
+                mob.spawnAtLocation(remaining);
+            }
         }
-        level.setBlock(pos, state, Block.UPDATE_ALL);
-        level.playSound(null, pos, state.getSoundType().getPlaceSound(), SoundSource.BLOCKS, 1.0F, 0.9F);
-        return true;
+    }
+
+    private boolean rollback(ServerLevel level, Map<BlockPos, BlockState> originals, List<BlockPos> placed) {
+        boolean restored = true;
+        for (int i = placed.size() - 1; i >= 0; i--) {
+            BlockPos pos = placed.get(i);
+            BlockState original = originals.get(pos);
+            if (original == null || !level.setBlock(pos, original, 3)) {
+                restored = false;
+                RyzoludzieMod.LOGGER.error("Could not roll back partially placed BUILD block at {}", pos);
+            }
+        }
+        return restored;
+    }
+
+    private static String itemName(Item item) {
+        return Objects.requireNonNull(BuiltInRegistries.ITEM.getKey(item)).toString();
     }
 
     private void fail(@Nullable String structureName, @Nullable String reason) {
         String name = structureName != null ? structureName : "?";
-        mob.setNotice("warn", "budowa " + name + " przerwana: " + reason);
-        RyzoludzieMod.LOGGER.warn("[Ryzoludzie] BUILD {} przerwany: {}", name, reason);
-        mob.finishCommand();
+        String message = "budowa " + name + " nie powiodła się: " + reason;
+        RyzoludzieMod.LOGGER.warn("[Ryzoludzie] BUILD {} nieudany: {}", name, reason);
+        mob.failCommand("BUILD_FAILED", message);
+    }
+
+    private record Debit(Container source, ItemStack stack) {
     }
 }

@@ -71,7 +71,7 @@ public class PlaceBlockGoal extends Goal {
     public void tick() {
         Item item = mob.getPlaceItem();
         if (item == null || !(mob.level() instanceof ServerLevel level)) {
-            mob.finishCommand();
+            mob.failCommand("INVALID_COMMAND", "brak danych przedmiotu lub świata dla PLACE");
             return;
         }
         if (!RiceCrafter.has(mob, item)) {
@@ -132,8 +132,8 @@ public class PlaceBlockGoal extends Goal {
 
     private void fail(Item item, String reason) {
         String name = BuiltInRegistries.ITEM.getKey(item).toString();
-        mob.setNotice("warn", "stawianie " + name + " przerwane: " + reason);
+        String message = "stawianie " + name + " przerwane: " + reason;
         RyzoludzieMod.LOGGER.warn("[Ryzoludzie] PLACE {} przerwany: {}", name, reason);
-        mob.finishCommand();
+        mob.failCommand("PLACE_FAILED", message);
     }
 }

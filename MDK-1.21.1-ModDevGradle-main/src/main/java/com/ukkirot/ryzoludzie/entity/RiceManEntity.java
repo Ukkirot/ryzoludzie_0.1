@@ -1,16 +1,17 @@
 package com.ukkirot.ryzoludzie.entity;
 
 import com.ukkirot.ryzoludzie.entity.ai.BuildStructureGoal;
-import com.ukkirot.ryzoludzie.entity.ai.CraftGoal;
 import com.ukkirot.ryzoludzie.entity.ai.GatherItemsGoal;
 import com.ukkirot.ryzoludzie.entity.ai.HarvestBlocksGoal;
 import com.ukkirot.ryzoludzie.entity.ai.IdleStrollGoal;
 import com.ukkirot.ryzoludzie.entity.ai.MoveToCommandGoal;
 import com.ukkirot.ryzoludzie.entity.ai.PlaceBlockGoal;
+import com.ukkirot.ryzoludzie.entity.ai.ScoutGoal;
 import com.ukkirot.ryzoludzie.entity.ai.StorageGoal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
@@ -33,9 +34,13 @@ import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.Level;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 
 /**
  * Podstawowa jednostka frakcji Ryżoludzi.
@@ -45,7 +50,7 @@ import javax.annotation.Nullable;
  */
 public class RiceManEntity extends PathfinderMob {
 
-    public enum Command {IDLE, MOVE, ATTACK, GATHER, HARVEST, CRAFT, PLACE, DEPOSIT, WITHDRAW, BUILD}
+    public enum Command {IDLE, MOVE, ATTACK, GATHER, HARVEST, SCOUT, CRAFT, PLACE, DEPOSIT, WITHDRAW, BUILD}
 
     /** Co ma zbierać komenda HARVEST. */
     public enum HarvestMode {
@@ -76,6 +81,11 @@ public class RiceManEntity extends PathfinderMob {
     private final SimpleContainer inventory = new SimpleContainer(INVENTORY_SIZE);
     private Command command = Command.IDLE;
     @Nullable
+    private String activeCommandId;
+    @Nullable
+    private String activeCommandType;
+    private final List<CommandResult> commandResults = new ArrayList<>();
+    @Nullable
     private BlockPos commandPos;
     private HarvestMode harvestMode = HarvestMode.ALL;
     @Nullable
@@ -83,11 +93,6 @@ public class RiceManEntity extends PathfinderMob {
     private boolean naturalOnly = true;
     private boolean fellTrees = true;
 
-    // CRAFT: co wytworzyć, ile sztuk i czy potem postawić (w placePos albo w wolnym miejscu obok)
-    @Nullable
-    private Item craftItem;
-    private int craftCount = 1;
-    private boolean placeAfterCraft;
     // PLACE: co postawić i gdzie (null = w wolnym miejscu obok jednostki)
     @Nullable
     private Item placeItem;
@@ -109,6 +114,8 @@ public class RiceManEntity extends PathfinderMob {
     @Nullable
     private Item withdrawItem;
     private int withdrawCount = 64;
+    private List<Block> gatherBlocks = List.of();
+    private List<BlockPos> gatherPositions = List.of();
 
     // Ostatni komunikat od jednostki (np. "brak w magazynie X"), do pokazania w dashboardzie.
     // Konsumowany przy pierwszym odczycie (RiceManBridge czyści go po wysłaniu w GET_STATE).
@@ -116,6 +123,11 @@ public class RiceManEntity extends PathfinderMob {
     private String noticeLevel;
     @Nullable
     private String noticeText;
+
+    public record CommandResult(String eventId, String commandId, String command, String status,
+                                @Nullable String reasonCode, @Nullable String reasonMessage,
+                                @Nullable String resultItem, int resultCount) {
+    }
 
     public RiceManEntity(EntityType<? extends RiceManEntity> type, Level level) {
         super(type, level);
@@ -139,10 +151,10 @@ public class RiceManEntity extends PathfinderMob {
         this.goalSelector.addGoal(2, new MoveToCommandGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new GatherItemsGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new HarvestBlocksGoal(this, 1.0D));
-        this.goalSelector.addGoal(3, new CraftGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new PlaceBlockGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new StorageGoal(this, 1.0D));
         this.goalSelector.addGoal(3, new BuildStructureGoal(this, 1.0D));
+        this.goalSelector.addGoal(3, new ScoutGoal(this, 1.0D));
         this.goalSelector.addGoal(4, new IdleStrollGoal(this, 0.8D));
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));
         this.goalSelector.addGoal(6, new RandomLookAroundGoal(this));
@@ -166,11 +178,32 @@ public class RiceManEntity extends PathfinderMob {
         this.setTarget(target);
     }
 
-    /** Zbiera przedmioty leżące na ziemi w promieniu GATHER_RADIUS od center (albo od swojej pozycji). */
-    public void commandGather(@Nullable BlockPos center) {
+    /** Mines the requested block types in the target chunk, or picks up nearby drops if none were specified. */
+    public void commandGather(@Nullable BlockPos center, List<Block> blocks, List<BlockPos> positions) {
         this.setTarget(null);
         this.command = Command.GATHER;
         this.commandPos = (center != null ? center : this.blockPosition()).immutable();
+        this.gatherBlocks = blocks.stream()
+                .flatMap(block -> com.ukkirot.ryzoludzie.structure.MineMarker.blockVariants(block).stream())
+                .distinct()
+                .toList();
+        this.gatherPositions = positions.stream().map(BlockPos::immutable).toList();
+        this.getNavigation().stop();
+    }
+
+    public List<Block> getGatherBlocks() {
+        return gatherBlocks;
+    }
+
+    public List<BlockPos> getGatherPositions() {
+        return gatherPositions;
+    }
+
+    public void commandScout(BlockPos chunkCenter) {
+        this.setTarget(null);
+        this.command = Command.SCOUT;
+        this.commandPos = chunkCenter.immutable();
+        this.getNavigation().stop();
     }
 
     /**
@@ -192,22 +225,6 @@ public class RiceManEntity extends PathfinderMob {
         this.commandPos = null;
     }
 
-    /**
-     * Wytwarza przedmiot z tego, co ma w ekwipunku (razem z półproduktami: deski, patyki, stół).
-     * Gdy trzeba użyć stołu rzemieślniczego, którego nie ma w pobliżu, ryżoludź sam go zrobi i postawi.
-     * placeAfter=true: gotowy przedmiot (blok) postawi w placePos albo w wolnym miejscu obok siebie.
-     */
-    public void commandCraft(Item item, int count, boolean placeAfter, @Nullable BlockPos placeAt) {
-        this.setTarget(null);
-        this.command = Command.CRAFT;
-        this.craftItem = item;
-        this.craftCount = Math.max(1, count);
-        this.placeAfterCraft = placeAfter;
-        this.placePos = placeAt != null ? placeAt.immutable() : null;
-        this.commandPos = null;
-        this.getNavigation().stop();
-    }
-
     /** Stawia blok z ekwipunku w podanym miejscu (albo w wolnym miejscu obok jednostki, gdy pos == null). */
     public void commandPlace(Item item, @Nullable BlockPos pos) {
         this.setTarget(null);
@@ -218,7 +235,7 @@ public class RiceManEntity extends PathfinderMob {
         this.getNavigation().stop();
     }
 
-    /** Buduje strukturę (.nbt) z materiałów w ekwipunku, stawiając bloki jeden po drugim od origin. */
+    /** Stawia całą strukturę (.nbt) w origin, pobierając materiały z ekwipunku i magazynu. */
     public void commandBuild(String structureName, BlockPos origin) {
         this.setTarget(null);
         this.command = Command.BUILD;
@@ -285,11 +302,62 @@ public class RiceManEntity extends PathfinderMob {
     public void commandStop() {
         this.setTarget(null);
         this.getNavigation().stop();
-        this.finishCommand();
+        if (command != Command.IDLE) {
+            finishCommand("CANCELLED", null, null);
+        }
     }
 
-    /** Wołane przez goale, gdy komenda się skończyła (albo się nie da jej wykonać). */
+    public void setActiveCommandId(String commandId, String commandType) {
+        this.activeCommandId = commandId;
+        this.activeCommandType = commandType;
+    }
+
+    @Nullable
+    public String getActiveCommandId() {
+        return activeCommandId;
+    }
+
+    public List<CommandResult> getCommandResults() {
+        return List.copyOf(commandResults);
+    }
+
+    public void acknowledgeCommandResults(List<String> eventIds) {
+        commandResults.removeIf(result -> eventIds.contains(result.eventId()));
+    }
+
+    public void recordCommandResult(String commandId, String commandType, String status,
+                                    @Nullable String reasonCode, @Nullable String reasonMessage,
+                                    @Nullable Item resultItem, int resultCount) {
+        commandResults.add(new CommandResult(UUID.randomUUID().toString(), commandId, commandType, status,
+                reasonCode, reasonMessage,
+                resultItem != null ? BuiltInRegistries.ITEM.getKey(resultItem).toString() : null, resultCount));
+    }
+
+    /** Wołane przez goale, gdy komenda zakończyła się poprawnie. */
     public void finishCommand() {
+        finishCommand("SUCCEEDED", null, null);
+    }
+
+    public void finishCommandWithMessage(String message) {
+        finishCommand("SUCCEEDED", null, message);
+    }
+
+    public void failCommand(String reasonCode, String reasonMessage) {
+        finishCommand("FAILED", reasonCode, reasonMessage);
+    }
+
+    public void cancelCommand(String reasonCode, String reasonMessage) {
+        finishCommand("CANCELLED", reasonCode, reasonMessage);
+    }
+
+    private void finishCommand(String status, @Nullable String reasonCode, @Nullable String reasonMessage) {
+        if (activeCommandId != null && command != Command.IDLE) {
+            String commandType = activeCommandType != null ? activeCommandType : command.name();
+            commandResults.add(new CommandResult(UUID.randomUUID().toString(), activeCommandId, commandType,
+                    status, reasonCode, reasonMessage, null, 0));
+            activeCommandId = null;
+            activeCommandType = null;
+        }
         this.command = Command.IDLE;
         this.commandPos = null;
     }
@@ -318,19 +386,6 @@ public class RiceManEntity extends PathfinderMob {
 
     public boolean isFellTrees() {
         return fellTrees;
-    }
-
-    @Nullable
-    public Item getCraftItem() {
-        return craftItem;
-    }
-
-    public int getCraftCount() {
-        return craftCount;
-    }
-
-    public boolean isPlaceAfterCraft() {
-        return placeAfterCraft;
     }
 
     @Nullable
@@ -413,6 +468,32 @@ public class RiceManEntity extends PathfinderMob {
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.putString("RcCommand", command.name());
+        if (activeCommandId != null) {
+            tag.putString("RcActiveCommandId", activeCommandId);
+        }
+        if (activeCommandType != null) {
+            tag.putString("RcActiveCommandType", activeCommandType);
+        }
+        ListTag results = new ListTag();
+        for (CommandResult result : commandResults) {
+            CompoundTag entry = new CompoundTag();
+            entry.putString("eventId", result.eventId());
+            entry.putString("commandId", result.commandId());
+            entry.putString("command", result.command());
+            entry.putString("status", result.status());
+            if (result.reasonCode() != null) {
+                entry.putString("reasonCode", result.reasonCode());
+            }
+            if (result.reasonMessage() != null) {
+                entry.putString("reasonMessage", result.reasonMessage());
+            }
+            if (result.resultItem() != null) {
+                entry.putString("resultItem", result.resultItem());
+                entry.putInt("resultCount", result.resultCount());
+            }
+            results.add(entry);
+        }
+        tag.put("RcCommandResults", results);
         tag.putString("RcHarvestMode", harvestMode.name());
         tag.putBoolean("RcNaturalOnly", naturalOnly);
         tag.putBoolean("RcFellTrees", fellTrees);
@@ -422,11 +503,6 @@ public class RiceManEntity extends PathfinderMob {
         if (commandPos != null) {
             tag.putIntArray("RcPos", new int[]{commandPos.getX(), commandPos.getY(), commandPos.getZ()});
         }
-        if (craftItem != null) {
-            tag.putString("RcCraftItem", BuiltInRegistries.ITEM.getKey(craftItem).toString());
-        }
-        tag.putInt("RcCraftCount", craftCount);
-        tag.putBoolean("RcPlaceAfterCraft", placeAfterCraft);
         if (placeItem != null) {
             tag.putString("RcPlaceItem", BuiltInRegistries.ITEM.getKey(placeItem).toString());
         }
@@ -447,6 +523,21 @@ public class RiceManEntity extends PathfinderMob {
             tag.putString("RcWithdrawItem", BuiltInRegistries.ITEM.getKey(withdrawItem).toString());
         }
         tag.putInt("RcWithdrawCount", withdrawCount);
+        ListTag gatherBlocksTag = new ListTag();
+        for (Block block : gatherBlocks) {
+            gatherBlocksTag.add(net.minecraft.nbt.StringTag.valueOf(
+                    BuiltInRegistries.BLOCK.getKey(block).toString()));
+        }
+        tag.put("RcGatherBlocks", gatherBlocksTag);
+        ListTag gatherPositionsTag = new ListTag();
+        for (BlockPos pos : gatherPositions) {
+            CompoundTag entry = new CompoundTag();
+            entry.putInt("x", pos.getX());
+            entry.putInt("y", pos.getY());
+            entry.putInt("z", pos.getZ());
+            gatherPositionsTag.add(entry);
+        }
+        tag.put("RcGatherPositions", gatherPositionsTag);
         tag.put("RcInventory", inventory.createTag(this.level().registryAccess()));
     }
 
@@ -458,6 +549,28 @@ public class RiceManEntity extends PathfinderMob {
         } catch (IllegalArgumentException e) {
             this.command = Command.IDLE;
         }
+        this.activeCommandId = tag.contains("RcActiveCommandId")
+                ? tag.getString("RcActiveCommandId") : null;
+        this.activeCommandType = tag.contains("RcActiveCommandType")
+                ? tag.getString("RcActiveCommandType") : null;
+        this.commandResults.clear();
+        ListTag results = tag.getList("RcCommandResults", Tag.TAG_COMPOUND);
+        for (int i = 0; i < results.size(); i++) {
+            CompoundTag entry = results.getCompound(i);
+            try {
+                this.commandResults.add(new CommandResult(
+                        entry.getString("eventId"),
+                        entry.getString("commandId"),
+                        entry.getString("command"),
+                        entry.getString("status"),
+                        entry.contains("reasonCode") ? entry.getString("reasonCode") : null,
+                        entry.contains("reasonMessage") ? entry.getString("reasonMessage") : null,
+                        entry.contains("resultItem") ? entry.getString("resultItem") : null,
+                        entry.getInt("resultCount")));
+            } catch (IllegalArgumentException ignored) {
+                // Ignore malformed result entries from an interrupted or older save.
+            }
+        }
         try {
             this.harvestMode = HarvestMode.valueOf(tag.getString("RcHarvestMode"));
         } catch (IllegalArgumentException e) {
@@ -468,9 +581,6 @@ public class RiceManEntity extends PathfinderMob {
         this.fellTrees = !tag.contains("RcFellTrees") || tag.getBoolean("RcFellTrees");
         int[] p = tag.getIntArray("RcPos");
         this.commandPos = p.length == 3 ? new BlockPos(p[0], p[1], p[2]) : null;
-        this.craftItem = readItem(tag, "RcCraftItem");
-        this.craftCount = Math.max(1, tag.getInt("RcCraftCount"));
-        this.placeAfterCraft = tag.getBoolean("RcPlaceAfterCraft");
         this.placeItem = readItem(tag, "RcPlaceItem");
         int[] pp = tag.getIntArray("RcPlacePos");
         this.placePos = pp.length == 3 ? new BlockPos(pp[0], pp[1], pp[2]) : null;
@@ -482,14 +592,27 @@ public class RiceManEntity extends PathfinderMob {
         this.depositResume = tag.getBoolean("RcDepositResume");
         this.withdrawItem = readItem(tag, "RcWithdrawItem");
         this.withdrawCount = tag.contains("RcWithdrawCount") ? Math.max(1, tag.getInt("RcWithdrawCount")) : 64;
+        ListTag gatherBlocksTag = tag.getList("RcGatherBlocks", Tag.TAG_STRING);
+        List<Block> loadedGatherBlocks = new ArrayList<>();
+        for (int i = 0; i < gatherBlocksTag.size(); i++) {
+            ResourceLocation id = ResourceLocation.tryParse(gatherBlocksTag.getString(i));
+            if (id != null) {
+                BuiltInRegistries.BLOCK.getOptional(id).ifPresent(loadedGatherBlocks::add);
+            }
+        }
+        this.gatherBlocks = List.copyOf(loadedGatherBlocks);
+        ListTag gatherPositionsTag = tag.getList("RcGatherPositions", Tag.TAG_COMPOUND);
+        List<BlockPos> loadedGatherPositions = new ArrayList<>();
+        for (int i = 0; i < gatherPositionsTag.size(); i++) {
+            CompoundTag entry = gatherPositionsTag.getCompound(i);
+            loadedGatherPositions.add(new BlockPos(entry.getInt("x"), entry.getInt("y"), entry.getInt("z")));
+        }
+        this.gatherPositions = List.copyOf(loadedGatherPositions);
         if (tag.contains("RcInventory", Tag.TAG_LIST)) {
             inventory.fromTag(tag.getList("RcInventory", Tag.TAG_COMPOUND), this.level().registryAccess());
         }
         // Ręka to kopia narzędzia z ekwipunku, więc po wczytaniu czyścimy ją (narzędzie i tak leży w ekwipunku).
         this.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
-        if (this.command == Command.CRAFT && this.craftItem == null) {
-            this.command = Command.IDLE;
-        }
         if (this.command == Command.PLACE && this.placeItem == null) {
             this.command = Command.IDLE;
         }
@@ -506,8 +629,16 @@ public class RiceManEntity extends PathfinderMob {
         if (this.command == Command.ATTACK) {
             this.command = Command.IDLE;
         }
+        // Stare wersje zapisywały CRAFT jako aktywne zadanie wieloetapowe.
+        if (this.command == Command.CRAFT) {
+            this.command = Command.IDLE;
+        }
         if (this.command == Command.HARVEST && this.harvestArea == null) {
             this.command = Command.IDLE;
+        }
+        if (this.command == Command.IDLE) {
+            this.activeCommandId = null;
+            this.activeCommandType = null;
         }
     }
 

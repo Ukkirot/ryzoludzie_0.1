@@ -11,7 +11,6 @@ import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.Vec3;
 
@@ -72,7 +71,7 @@ public class StorageGoal extends Goal {
     public void tick() {
         BlockPos chest = mob.getStorageChest();
         if (chest == null || !(mob.level() instanceof ServerLevel level)) {
-            mob.finishCommand();
+            fail("brak magazynu lub świata");
             return;
         }
         if (!level.isLoaded(chest)) {
@@ -100,8 +99,8 @@ public class StorageGoal extends Goal {
         mob.getNavigation().stop();
         mob.getLookControl().setLookAt(center.x, center.y, center.z);
 
-        BlockEntity be = level.getBlockEntity(chest);
-        if (!(be instanceof Container container)) {
+        Container container = ContainerTransfer.containerAt(level, chest);
+        if (container == null) {
             fail("w tym miejscu nie ma już magazynu");
             return;
         }
@@ -130,8 +129,12 @@ public class StorageGoal extends Goal {
         }
         if (leftover) {
             String msg = "magazyn jest pełny, część przedmiotów została w ekwipunku";
-            mob.setNotice("warn", msg);
             RyzoludzieMod.LOGGER.warn("[Ryzoludzie] DEPOSIT {}: {}", mob.getUUID(), msg);
+            if (!mob.isDepositResume()) {
+                mob.failCommand("STORAGE_FULL", msg);
+                return;
+            }
+            mob.setNotice("warn", msg);
         }
         boolean resume = mob.isDepositResume() && mob.getHarvestArea() != null;
         if (resume) {
@@ -144,7 +147,7 @@ public class StorageGoal extends Goal {
     private void doWithdraw(Container container) {
         Item item = mob.getWithdrawItem();
         if (item == null) {
-            mob.finishCommand();
+            mob.failCommand("INVALID_COMMAND", "brak przedmiotu do pobrania");
             return;
         }
         int wanted = mob.getWithdrawCount();
@@ -162,16 +165,17 @@ public class StorageGoal extends Goal {
             String msg = got == 0
                     ? "w magazynie nie ma " + name
                     : "w magazynie było tylko " + got + " z " + wanted + " (" + name + ")";
-            mob.setNotice("warn", msg);
             RyzoludzieMod.LOGGER.warn("[Ryzoludzie] WITHDRAW {}: {}", mob.getUUID(), msg);
+            mob.failCommand("INSUFFICIENT_STORAGE_STOCK", msg);
+            return;
         }
         mob.finishCommand();
     }
 
     private void fail(String reason) {
-        mob.setNotice("warn", (mob.getCommand() == RiceManEntity.Command.WITHDRAW ? "pobieranie" : "odkładanie")
-                + " przerwane: " + reason);
+        String message = (mob.getCommand() == RiceManEntity.Command.WITHDRAW ? "pobieranie" : "odkładanie")
+                + " przerwane: " + reason;
         RyzoludzieMod.LOGGER.warn("[Ryzoludzie] {} przerwany: {}", mob.getCommand(), reason);
-        mob.finishCommand();
+        mob.failCommand("STORAGE_FAILED", message);
     }
 }

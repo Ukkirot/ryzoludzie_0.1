@@ -62,7 +62,7 @@ public class MoveToCommandGoal extends Goal {
         }
         if (mob.getNavigation().isDone()) {
             if (++retries > MAX_RETRIES) {
-                mob.finishCommand(); // nieosiągalne
+                mob.failCommand("UNREACHABLE", "nie da się dojść do celu");
                 return;
             }
             moveToTarget();

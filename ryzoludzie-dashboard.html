@@ -246,6 +246,7 @@ h2 { font: 700 17px/1.2 var(--serif); }
         <button type="button" data-tool="spawn" aria-pressed="false" title="Klik: postaw nowego ryżoludzia">Nowy ryżoludź</button>
         <button type="button" data-tool="pin" aria-pressed="false" title="Klik: wskaż miejsce, w którym ryżoludź ma coś postawić">Miejsce budowy</button>
         <button type="button" data-tool="storage" aria-pressed="false" title="Klik: wskaż skrzynię lub inny pojemnik jako magazyn">Magazyn</button>
+        <button type="button" data-tool="scout" aria-pressed="false" title="Klik: wybierz chunk do zwiadu">Zwiad</button>
       </div>
       <label class="check"><input type="checkbox" id="snap"> Przyciągaj do chunków</label>
       <label class="check"><input type="checkbox" id="showTerrain" checked> Teren</label>
@@ -269,6 +270,9 @@ h2 { font: 700 17px/1.2 var(--serif); }
         <button type="button" class="btn small" id="selectAll">Zaznacz wszystkie</button>
         <button type="button" class="btn small" id="selectNone">Odznacz</button>
       </div>
+      <p class="hint" id="commandQueueInfo">Kolejka rozkazów jest pusta.</p>
+      <button type="button" class="btn small" id="clearCommandQueue" disabled>Usuń oczekujące zaznaczonych</button>
+      <p class="hint">Rozkazy dla tej samej jednostki wykonują się po kolei. MOVE przerywa bieżący rozkaz i czyści jej kolejkę; STOP ją zatrzymuje i również usuwa oczekujące.</p>
     </div>
 
     <div class="section">
@@ -321,17 +325,13 @@ h2 { font: 700 17px/1.2 var(--serif); }
           <option value="minecraft:barrel" label="beczka"></option>
         </datalist>
       </label>
-      <label class="field"><span>Ilość</span>
-        <input id="craftCount" type="number" min="1" max="64" value="1">
-      </label>
-      <label class="check"><input type="checkbox" id="craftPlace" checked> Postaw po wytworzeniu</label>
-      <p class="hint" id="pinInfo">Miejsce budowy nie jest wskazane, blok stanie obok ryżoludzia.</p>
+      <p class="hint" id="pinInfo">Cel PLACE nie jest wskazany — blok stanie obok ryżoludzia. Wskaż punkt na mapie, by wybrać miejsce.</p>
       <div class="row"><button type="button" class="btn small" id="pinClear" disabled>Wyczyść miejsce</button></div>
       <div class="row">
         <button type="button" class="btn primary" id="craftBtn" disabled>Wytwórz</button>
         <button type="button" class="btn" id="placeBtn" disabled>Postaw z ekwipunku</button>
       </div>
-      <p class="hint">Deski, patyki i stół rzemieślniczy ryżoludź zrobi sam, jeśli ma drewno.</p>
+      <p class="hint">Każde polecenie wykonuje jeden craft z ekwipunku i magazynu. Nie tworzy półproduktów. Bloki stawiaj osobnym poleceniem.</p>
     </div>
 
     <div class="section">
@@ -348,6 +348,10 @@ h2 { font: 700 17px/1.2 var(--serif); }
         <button type="button" class="btn small" id="structureCheckBtn" disabled>Sprawdź materiały</button>
         <button type="button" class="btn primary" id="structureBuildBtn" disabled>Zbuduj</button>
       </div>
+      <label class="field"><span>Gracz do testu</span>
+        <select id="structureMaterialsPlayer"><option value="">— wybierz gracza —</option></select>
+      </label>
+      <button type="button" class="btn small" id="structureMaterialsBtn" disabled>Dodaj materiały do inventory gracza</button>
       <p class="hint" id="structureBuildHint">Zaznacz jednostki, wybierz strukturę i wskaż Miejsce budowy na mapie.</p>
     </div>
 
@@ -373,7 +377,14 @@ h2 { font: 700 17px/1.2 var(--serif); }
 
     <div class="section">
       <h2>Inne rozkazy</h2>
-      <button type="button" class="btn" id="gatherBtn" disabled>Zbieraj przedmioty z ziemi</button>
+      <label class="field"><span>Bloki do wydobycia w chunku (ID, po przecinku)</span>
+        <input id="gatherBlocks" type="text" placeholder="minecraft:iron_ore,minecraft:coal_ore" spellcheck="false" autocomplete="off">
+      </label>
+      <button type="button" class="btn" id="gatherBtn" disabled>GATHER: wydobądź / zbierz</button>
+      <p class="hint">Przy pustym polu zbiera leżące przedmioty jak dotychczas. Przy podanych blokach najpierw idzie do Znacznika kopalni, a potem wydobywa wszystkie ich wystąpienia po kolei z chunku wskazanego narzędziem Chunk albo punktem na mapie. Wpisanie np. minecraft:iron_ore obejmuje też wariant deepslate_iron_ore. Ryżoludź musi mieć odpowiedni kilof i miejsce na drop w inventory.</p>
+      <button type="button" class="btn" id="scoutBtn" disabled>SCOUT: zbadaj chunk (około 1 min)</button>
+      <p class="hint" id="scoutHint">Zaznacz chunk narzędziem Chunk lub wskaż punkt na mapie.</p>
+      <p class="hint">Po około minucie w dzienniku pojawi się krótkie podsumowanie liczby rud i bloków drewna według rodzaju w tym chunku.</p>
       <label class="field"><span>Cel ataku</span>
         <input id="target" type="text" value="nearest:minecraft:zombie" spellcheck="false" autocomplete="off">
       </label>
@@ -402,19 +413,23 @@ const els = {
   mapWrap: $('mapWrap'), canvas: $('map'), mapNote: $('mapNote'), mapNoteTitle: $('mapNoteTitle'), mapNoteText: $('mapNoteText'),
   coords: $('coords'), snap: $('snap'), showTerrain: $('showTerrain'),
   selInfo: $('selInfo'), selectAll: $('selectAll'), selectNone: $('selectNone'),
+  commandQueueInfo: $('commandQueueInfo'), clearCommandQueue: $('clearCommandQueue'),
   areaEmpty: $('areaEmpty'), areaFilled: $('areaFilled'), areaSize: $('areaSize'), areaCoords: $('areaCoords'),
   areaChunks: $('areaChunks'), areaWarn: $('areaWarn'), areaClear: $('areaClear'),
   what: $('what'), natural: $('natural'), fell: $('fell'), split: $('split'),
   harvestBtn: $('harvestBtn'), harvestHint: $('harvestHint'),
-  gatherBtn: $('gatherBtn'), attackBtn: $('attackBtn'), target: $('target'), stopBtn: $('stopBtn'),
+  gatherBtn: $('gatherBtn'), gatherBlocks: $('gatherBlocks'), scoutBtn: $('scoutBtn'),
+  scoutHint: $('scoutHint'),
+  attackBtn: $('attackBtn'), target: $('target'), stopBtn: $('stopBtn'),
   zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), recenter: $('recenter'),
-  craftItem: $('craftItem'), craftCount: $('craftCount'), craftPlace: $('craftPlace'),
+  craftItem: $('craftItem'),
   craftBtn: $('craftBtn'), placeBtn: $('placeBtn'), pinInfo: $('pinInfo'), pinClear: $('pinClear'),
   storagePinInfo: $('storagePinInfo'), storageAssign: $('storageAssign'), storageClear: $('storageClear'),
   depositBtn: $('depositBtn'), withdrawItem: $('withdrawItem'), withdrawCount: $('withdrawCount'), withdrawBtn: $('withdrawBtn'),
   structureFile: $('structureFile'), structureUploadBtn: $('structureUploadBtn'),
   structureList: $('structureList'), structureHint: $('structureHint'),
   structureCheckBtn: $('structureCheckBtn'), structureBuildBtn: $('structureBuildBtn'),
+  structureMaterialsPlayer: $('structureMaterialsPlayer'), structureMaterialsBtn: $('structureMaterialsBtn'),
   structureBuildHint: $('structureBuildHint'),
   logList: $('logList'),
 };
@@ -441,6 +456,7 @@ const CMD = {
   ATTACK:  { label: 'atakuje',             color: '#d2452f' },
   GATHER:  { label: 'zbiera przedmioty',   color: '#d08a1f' },
   HARVEST: { label: 'pracuje w obszarze',  color: '#3aa85c' },
+  SCOUT:   { label: 'bada chunk',          color: '#5476b8' },
   CRAFT:   { label: 'wytwarza',            color: '#8a63d2' },
   PLACE:   { label: 'stawia blok',         color: '#c4703a' },
   DEPOSIT: { label: 'odkłada do magazynu', color: '#3a8fc4' },
@@ -454,7 +470,12 @@ const state = {
   pollTimer: null,
   pollId: 0,
   reqId: 0,
+  commandSeq: 0,
   pending: new Map(),
+  seenEvents: new Set(),
+  seenCommandResults: new Set(),
+  commandQueue: new Map(),
+  commandActive: new Map(),
   units: new Map(),
   players: [],
   gameTime: null,
@@ -488,9 +509,9 @@ function loadPrefs() {
     for (const k of ['natural', 'fell', 'split', 'snap', 'showTerrain']) {
       if (typeof p[k] === 'boolean') els[k].checked = p[k];
     }
+
     if (typeof p.target === 'string' && p.target) els.target.value = p.target;
     if (typeof p.craftItem === 'string' && p.craftItem) els.craftItem.value = p.craftItem;
-    if (typeof p.craftPlace === 'boolean') els.craftPlace.checked = p.craftPlace;
     if (typeof p.withdrawItem === 'string' && p.withdrawItem) els.withdrawItem.value = p.withdrawItem;
   } catch (e) { /* localStorage może być niedostępny */ }
 }
@@ -499,10 +520,49 @@ function savePrefs() {
     localStorage.setItem('ryzoludzie.dashboard', JSON.stringify({
       url: els.url.value.trim(), what: els.what.value, natural: els.natural.checked,
       fell: els.fell.checked, split: els.split.checked, snap: els.snap.checked, showTerrain: els.showTerrain.checked,
-      target: els.target.value.trim(), craftItem: els.craftItem.value.trim(), craftPlace: els.craftPlace.checked,
+      target: els.target.value.trim(), craftItem: els.craftItem.value.trim(),
       withdrawItem: els.withdrawItem.value.trim(),
     }));
   } catch (e) { /* jw. */ }
+}
+
+function formatScoutReport(report) {
+  const ores = new Map();
+  const wood = new Map();
+  const addCounts = (target, source, validBlock) => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return;
+    for (const [block, count] of Object.entries(source)) {
+      if (validBlock(block) && Number.isSafeInteger(count) && count > 0) {
+        target.set(block, (target.get(block) || 0) + count);
+      }
+    }
+  };
+  const isWood = (block) => /_(log|wood|stem|hyphae)$/.test(block);
+  addCounts(ores, report.ores, (block) => block.endsWith('_ore'));
+  addCounts(wood, report.wood, isWood);
+  if (Array.isArray(report.findings)) {
+    for (const finding of report.findings) {
+      if (!finding || typeof finding.block !== 'string') continue;
+      if (finding.block.endsWith('_ore')) {
+        ores.set(finding.block, (ores.get(finding.block) || 0) + 1);
+      } else if (isWood(finding.block)) {
+        wood.set(finding.block, (wood.get(finding.block) || 0) + 1);
+      }
+    }
+  }
+  const formatGroup = (counts, label) => {
+    const total = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+    if (!total) return 'brak ' + label;
+    const kinds = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    const summary = kinds.slice(0, 5).map(([block, count]) => niceItem(block) + ' ×' + count).join(', ');
+    const remainingKinds = kinds.length - 5;
+    return total + ' ' + label + ': ' + summary
+      + (remainingKinds > 0 ? ' i ' + remainingKinds + ' innych rodzajów' : '');
+  };
+  const chunk = Number.isInteger(report.chunkX) && Number.isInteger(report.chunkZ)
+    ? 'chunk ' + report.chunkX + ', ' + report.chunkZ
+    : 'wskazany chunk';
+  return 'SCOUT: ' + chunk + ' — ' + formatGroup(ores, 'rud') + '; ' + formatGroup(wood, 'kłód');
 }
 
 /* ------------------------------------------------------------------ dziennik */
@@ -591,6 +651,7 @@ function disconnect() {
 function startPolling() {
   stopPolling();
   requestState();
+  for (const unitId of state.commandQueue.keys()) dispatchNextCommand(unitId);
   state.pollTimer = setInterval(requestState, 1000);
   state.terrainTimer = setInterval(terrainTick, 700);
   terrainTick();
@@ -659,16 +720,144 @@ function uploadStructure() {
   reader.readAsDataURL(file);
 }
 
+const UNIT_COMMAND_TYPES = new Set([
+  'MOVE', 'ATTACK', 'GATHER', 'SCOUT', 'HARVEST', 'CRAFT', 'PLACE', 'DEPOSIT', 'WITHDRAW',
+  'BUILD', 'BUILD_STRUCTURE',
+]);
+
+function sendRaw(obj, label, queueJob) {
+  if (!connected()) {
+    log('err', 'Brak połączenia z modem, rozkaz nie został wysłany.');
+    return false;
+  }
+  const message = { ...obj };
+  const requestId = 'c' + (++state.reqId);
+  message.requestId = requestId;
+  if (UNIT_COMMAND_TYPES.has(message.type)) {
+    message.commandId = 'd' + Date.now().toString(36) + '-' + (++state.commandSeq).toString(36);
+  }
+  if (queueJob) {
+    queueJob.requestId = requestId;
+    queueJob.commandId = message.commandId;
+    queueJob.type = message.type === 'BUILD_STRUCTURE' ? 'BUILD' : message.type;
+    state.commandActive.set(queueJob.unitId, queueJob);
+  }
+  state.pending.set(requestId, {
+    label,
+    unitId: queueJob ? queueJob.unitId : null,
+    commandId: queueJob ? queueJob.commandId : null,
+  });
+  state.ws.send(JSON.stringify(message));
+  renderCommandQueue();
+  return true;
+}
+
 function send(obj, label) {
   if (!connected()) {
     log('err', 'Brak połączenia z modem, rozkaz nie został wysłany.');
     return false;
   }
-  const requestId = 'c' + (++state.reqId);
-  obj.requestId = requestId;
-  state.pending.set(requestId, label);
-  state.ws.send(JSON.stringify(obj));
+  if (obj.type === 'STOP') {
+    const removed = clearQueuedCommands([obj.unit], false);
+    state.commandActive.delete(obj.unit);
+    if (removed) log('info', unitName(state.units.get(obj.unit) || { id: obj.unit })
+      + ': STOP usunął ' + removed + ' oczekujących rozkazów.');
+    return sendRaw(obj, label, null);
+  }
+  if (!UNIT_COMMAND_TYPES.has(obj.type)) return sendRaw(obj, label, null);
+
+  const unitId = obj.unit;
+  if (typeof unitId !== 'string' || !unitId) {
+    log('err', 'Rozkaz jednostki nie ma poprawnego identyfikatora.');
+    return false;
+  }
+  if (obj.type === 'MOVE') {
+    const removed = clearQueuedCommands([unitId], false);
+    state.commandActive.delete(unitId);
+    if (removed) {
+      log('warn', unitName(state.units.get(unitId) || { id: unitId })
+        + ': MOVE ma priorytet — usunięto ' + removed + ' oczekujących rozkazów.');
+    }
+    const sent = sendRaw(obj, label, { unitId, label, command: { ...obj } });
+    if (sent) log('warn', unitName(state.units.get(unitId) || { id: unitId })
+      + ': MOVE wysłano z najwyższym priorytetem.');
+    return sent;
+  }
+
+  const queue = state.commandQueue.get(unitId) || [];
+  const job = { unitId, label, command: { ...obj } };
+  queue.push(job);
+  state.commandQueue.set(unitId, queue);
+  if (!state.commandActive.has(unitId) && queue.length === 1) {
+    dispatchNextCommand(unitId);
+  } else {
+    const position = queue.length + (state.commandActive.has(unitId) ? 1 : 0);
+    log('info', label + ' — dodano do kolejki (pozycja ' + position + ').');
+  }
+  renderCommandQueue();
   return true;
+}
+
+function dispatchNextCommand(unitId) {
+  if (!connected() || state.commandActive.has(unitId)) return;
+  const queue = state.commandQueue.get(unitId);
+  if (!queue || !queue.length) {
+    state.commandQueue.delete(unitId);
+    renderCommandQueue();
+    return;
+  }
+  const job = queue.shift();
+  if (!queue.length) state.commandQueue.delete(unitId);
+  if (!sendRaw(job.command, job.label, job)) {
+    const remaining = state.commandQueue.get(unitId) || [];
+    remaining.unshift(job);
+    state.commandQueue.set(unitId, remaining);
+  }
+  renderCommandQueue();
+}
+
+function completeQueuedCommand(unitId, commandId) {
+  if (!unitId || !commandId) return;
+  const active = state.commandActive.get(unitId);
+  if (!active || active.commandId !== commandId) return;
+  state.commandActive.delete(unitId);
+  renderCommandQueue();
+  dispatchNextCommand(unitId);
+}
+
+function clearQueuedCommands(unitIds, report = true) {
+  let removed = 0;
+  for (const unitId of unitIds) {
+    const queue = state.commandQueue.get(unitId);
+    if (!queue) continue;
+    removed += queue.length;
+    state.commandQueue.delete(unitId);
+  }
+  renderCommandQueue();
+  if (report && removed) {
+    log('info', 'Usunięto z kolejki ' + removed + ' oczekujących '
+      + (removed === 1 ? 'rozkaz' : 'rozkazów') + '.');
+  }
+  return removed;
+}
+
+function renderCommandQueue() {
+  if (!els.commandQueueInfo) return;
+  const selectedIds = Array.from(state.selected);
+  const queued = selectedIds.reduce((sum, id) => sum + (state.commandQueue.get(id) || []).length, 0);
+  const active = selectedIds.filter((id) => state.commandActive.has(id)).length;
+  const totalWaiting = Array.from(state.commandQueue.values()).reduce((sum, queue) => sum + queue.length, 0);
+  const totalActive = state.commandActive.size;
+  if (selectedIds.length) {
+    els.commandQueueInfo.textContent = active || queued
+      ? 'Zaznaczone jednostki: ' + active + ' aktywnych, ' + queued + ' oczekujących rozkazów.'
+      : 'Kolejka zaznaczonych jednostek jest pusta.';
+  } else {
+    els.commandQueueInfo.textContent = totalActive || totalWaiting
+      ? 'Wszystkie jednostki: ' + totalActive + ' aktywnych, ' + totalWaiting + ' oczekujących rozkazów.'
+      : 'Kolejka rozkazów jest pusta.';
+  }
+  els.clearCommandQueue.disabled = queued === 0;
 }
 
 function handleMessage(text) {
@@ -687,6 +876,10 @@ function handleMessage(text) {
     applyTerrain(msg);
     return;
   }
+  if (msg && msg.type === 'EVENTS_ACKED') {
+    state.pending.delete(msg.requestId);
+    return;
+  }
   const rid = String((msg && msg.requestId) || '');
   if (rid.startsWith('t') && msg.ok === false) {
     state.terrainInFlight = null;
@@ -698,10 +891,32 @@ function handleMessage(text) {
     }
     return;
   }
-  const label = state.pending.get(msg.requestId);
+  const pending = state.pending.get(msg.requestId);
+  const label = pending && pending.label ? pending.label : pending;
   state.pending.delete(msg.requestId);
   if (msg.ok) {
-    log('ok', label || msg.type || 'OK');
+    if (msg.type === 'CRAFT' && msg.resultStatus) {
+      state.seenCommandResults.add(String(msg.commandId));
+      if (msg.resultStatus === 'SUCCEEDED') {
+        log('ok', (label || 'CRAFT') + ' — wykonano: ' + msg.result.count + ' × ' + niceItem(msg.result.item));
+      } else {
+        log('err', (label || 'CRAFT') + (msg.reasonCode ? ' [' + msg.reasonCode + ']' : '')
+          + ' — ' + (msg.reasonMessage || 'nieznany błąd'));
+      }
+      if (pending && pending.unitId) completeQueuedCommand(pending.unitId, pending.commandId);
+    } else {
+      log(msg.status === 'ACCEPTED' ? 'info' : 'ok',
+        (label || msg.type || 'OK') + (msg.status === 'ACCEPTED' ? ' — przyjęto do wykonania' : ''));
+      if (pending && pending.unitId && msg.status === 'ACCEPTED') {
+        const active = state.commandActive.get(pending.unitId);
+        if (active && active.commandId === pending.commandId) active.accepted = true;
+      } else if (pending && pending.unitId) {
+        completeQueuedCommand(pending.unitId, pending.commandId);
+      }
+    }
+    if (msg.type === 'SET_STORAGE' && msg.storage) {
+      log('info', 'Magazyn przypisany: x ' + msg.storage.x + ', y ' + msg.storage.y + ', z ' + msg.storage.z);
+    }
     if (Array.isArray(msg.steps)) {
       log('info', 'Plan: ' + (msg.steps.length ? msg.steps.join(', ') : 'wszystko jest już w ekwipunku'));
     }
@@ -710,7 +925,13 @@ function handleMessage(text) {
         log('info', 'Rozmiar struktury: ' + msg.size.join(' × ') + ' bloków');
       }
       requestStructureList();
-    } else if (msg.type === 'CHECK_STRUCTURE' || msg.type === 'BUILD_STRUCTURE') {
+    } else if (msg.type === 'GIVE_BUILD_MATERIALS') {
+      const summary = (msg.materials || [])
+        .map((material) => material.count + ' × ' + niceItem(material.item))
+        .join(', ');
+      log('ok', 'Dodano graczowi ' + msg.player + ' materiały na ' + msg.name
+        + (summary ? ': ' + summary : ' — struktura nie wymaga dodatkowych bloków'));
+    } else if (msg.type === 'CHECK' || msg.type === 'CHECK_STRUCTURE' || msg.type === 'BUILD' || msg.type === 'BUILD_STRUCTURE') {
       reportStructureMaterials(msg);
     } else if (msg.type === 'LIST_STRUCTURES') {
       applyStructureList(msg.structures || []);
@@ -718,10 +939,48 @@ function handleMessage(text) {
     requestState();
   } else {
     log('err', (label ? label + ': ' : '') + (msg.error || 'nieznany błąd'));
+    if (pending && pending.unitId) completeQueuedCommand(pending.unitId, pending.commandId);
   }
 }
 
 function applyState(msg) {
+  const eventIds = [];
+  for (const event of msg.events || []) {
+    if (!event || typeof event.eventId !== 'string') continue;
+    eventIds.push(event.eventId);
+    if (state.seenEvents.has(event.eventId)) continue;
+    state.seenEvents.add(event.eventId);
+    if (event.commandId && state.seenCommandResults.has(event.commandId)) continue;
+    if (event.commandId) state.seenCommandResults.add(event.commandId);
+    if (event.command === 'SCOUT' && typeof event.reasonMessage === 'string'
+        && event.reasonMessage.startsWith('SCOUT_REPORT:')) {
+      try {
+        const report = JSON.parse(event.reasonMessage.slice('SCOUT_REPORT:'.length));
+        if (!report || typeof report !== 'object' || Array.isArray(report)) {
+          throw new Error('raport nie jest obiektem JSON');
+        }
+        const scoutUnit = state.units.get(event.unit) || { id: event.unit || '????' };
+        log('ok', unitName(scoutUnit) + ': ' + formatScoutReport(report));
+      } catch (e) {
+        log('err', 'Odebrano niepoprawny raport SCOUT: ' + e.message);
+      }
+      completeQueuedCommand(event.unit, event.commandId);
+      continue;
+    }
+    const unit = state.units.get(event.unit) || { id: event.unit || '????' };
+    const status = String(event.status || '').toUpperCase();
+    const result = event.reasonMessage
+      ? unitName(unit) + ': ' + event.command + (event.reasonCode ? ' [' + event.reasonCode + ']' : '') + ' — ' + event.reasonMessage
+      : unitName(unit) + ': ' + event.command + (status === 'SUCCEEDED' ? ' zakończono pomyślnie' : ' zakończono: ' + status)
+        + (event.result ? ' — wynik: ' + event.result.count + ' × ' + niceItem(event.result.item) : '');
+    log(status === 'SUCCEEDED' ? 'ok' : status === 'CANCELLED' ? 'warn' : 'err', result);
+    completeQueuedCommand(event.unit, event.commandId);
+  }
+  if (eventIds.length && connected()) {
+    const requestId = 'a' + (++state.reqId);
+    state.pending.set(requestId, 'Potwierdzanie wyników komend');
+    state.ws.send(JSON.stringify({ type: 'ACK_EVENTS', eventIds, requestId }));
+  }
   for (const u of msg.units || []) {
     if (u.notice && u.notice.text) {
       const kind = u.notice.level === 'warn' ? 'warn' : 'info';
@@ -731,10 +990,12 @@ function applyState(msg) {
   const next = new Map();
   for (const u of msg.units || []) next.set(u.id, u);
   state.units = next;
+  renderCommandQueue();
   for (const id of Array.from(state.selected)) {
     if (!next.has(id)) state.selected.delete(id);
   }
   state.players = msg.players || [];
+  updateStructureMaterialsPlayers();
   state.gameTime = typeof msg.gameTime === 'number' ? msg.gameTime : null;
   els.clock.textContent = state.gameTime === null ? '' : formatClock(state.gameTime);
 
@@ -745,6 +1006,14 @@ function applyState(msg) {
   renderUnits();
   updateControls();
   scheduleDraw();
+}
+
+function updateStructureMaterialsPlayers() {
+  const selected = els.structureMaterialsPlayer.value;
+  const players = [...new Set(state.players.map((player) => player.name).filter(Boolean))].sort();
+  els.structureMaterialsPlayer.replaceChildren(new Option('— wybierz gracza —', ''));
+  for (const name of players) els.structureMaterialsPlayer.add(new Option(name, name));
+  if (players.includes(selected)) els.structureMaterialsPlayer.value = selected;
 }
 
 function formatClock(t) {
@@ -947,8 +1216,8 @@ function splitArea(a, n) {
 function setPin(p) {
   state.pin = p;
   els.pinInfo.textContent = p
-    ? 'Miejsce budowy: x ' + p.x + ', z ' + p.z + '.'
-    : 'Miejsce budowy nie jest wskazane, blok stanie obok ryżoludzia.';
+    ? 'Cel PLACE / miejsce budowy: x ' + p.x + ', z ' + p.z + '.'
+    : 'Cel PLACE nie jest wskazany — blok stanie obok ryżoludzia.';
   els.pinClear.disabled = !p;
   updateControls();
   scheduleDraw();
@@ -1006,13 +1275,9 @@ els.harvestBtn.addEventListener('click', sendHarvest);
 els.craftBtn.addEventListener('click', () => {
   const item = els.craftItem.value.trim();
   if (!item) { log('err', 'Wpisz przedmiot do wytworzenia.'); return; }
-  const count = Math.max(1, Math.min(64, parseInt(els.craftCount.value, 10) || 1));
-  const place = els.craftPlace.checked;
   savePrefs();
   for (const u of selectedUnits()) {
-    const m = { type: 'CRAFT', unit: u.id, item, count, place };
-    if (place && state.pin) { m.x = state.pin.x; m.z = state.pin.z; }
-    send(m, unitName(u) + ' wytwarza ' + count + ' × ' + item + (place ? ' i stawia' : ''));
+    send({ type: 'CRAFT', unit: u.id, item }, unitName(u) + ' wykonuje jeden craft: ' + item);
   }
 });
 els.placeBtn.addEventListener('click', () => {
@@ -1031,12 +1296,13 @@ els.structureFile.addEventListener('change', () => {
 });
 els.structureUploadBtn.addEventListener('click', uploadStructure);
 els.structureList.addEventListener('change', updateControls);
+els.structureMaterialsPlayer.addEventListener('change', updateControls);
 els.structureCheckBtn.addEventListener('click', () => {
   const name = els.structureList.value;
   if (!name) { log('err', 'Wybierz strukturę z listy.'); return; }
   if (!state.pin) { log('err', 'Najpierw wskaż Miejsce budowy na mapie.'); return; }
   for (const u of selectedUnits()) {
-    send({ type: 'CHECK_STRUCTURE', unit: u.id, name, x: state.pin.x, z: state.pin.z },
+    send({ type: 'CHECK', unit: u.id, name, x: state.pin.x, z: state.pin.z },
       unitName(u) + ' sprawdza materiały na ' + name);
   }
 });
@@ -1045,9 +1311,18 @@ els.structureBuildBtn.addEventListener('click', () => {
   if (!name) { log('err', 'Wybierz strukturę z listy.'); return; }
   if (!state.pin) { log('err', 'Najpierw wskaż Miejsce budowy na mapie.'); return; }
   for (const u of selectedUnits()) {
-    send({ type: 'BUILD_STRUCTURE', unit: u.id, name, x: state.pin.x, z: state.pin.z },
+    send({ type: 'BUILD', unit: u.id, name, x: state.pin.x, z: state.pin.z },
       unitName(u) + ' buduje ' + name);
   }
+});
+els.structureMaterialsBtn.addEventListener('click', () => {
+  const name = els.structureList.value;
+  const player = els.structureMaterialsPlayer.value;
+  if (!name) { log('err', 'Wybierz strukturę z listy.'); return; }
+  if (!player) { log('err', 'Wybierz gracza do testu.'); return; }
+  if (!state.pin) { log('err', 'Najpierw wskaż Miejsce budowy na mapie.'); return; }
+  send({ type: 'GIVE_BUILD_MATERIALS', player, name, x: state.pin.x, z: state.pin.z },
+    'Dodawanie materiałów do inventory gracza ' + player + ' na ' + name);
 });
 els.storageAssign.addEventListener('click', () => {
   if (!state.storagePin) { log('info', 'Najpierw wskaż magazyn narzędziem Magazyn na mapie.'); return; }
@@ -1070,7 +1345,47 @@ els.withdrawBtn.addEventListener('click', () => {
   for (const u of selectedUnits()) send({ type: 'WITHDRAW', unit: u.id, item, count }, unitName(u) + ' pobiera ' + count + ' × ' + item);
 });
 els.gatherBtn.addEventListener('click', () => {
-  for (const u of selectedUnits()) send({ type: 'GATHER', unit: u.id }, unitName(u) + ' zbiera przedmioty z ziemi');
+  const blocks = els.gatherBlocks.value.split(',').map((id) => id.trim()).filter(Boolean);
+  let target = state.pin;
+  if (blocks.length && !target && state.area) {
+    const area = state.area;
+    const chunkX = Math.floor(area.x1 / CHUNK);
+    const chunkZ = Math.floor(area.z1 / CHUNK);
+    if (Math.floor(area.x2 / CHUNK) === chunkX && Math.floor(area.z2 / CHUNK) === chunkZ) {
+      target = { x: chunkX * CHUNK + 8, z: chunkZ * CHUNK + 8 };
+    }
+  }
+  if (blocks.length && !target) {
+    log('err', 'Wskaż chunk narzędziem Chunk albo wskaż miejsce na mapie.');
+    return;
+  }
+  for (const u of selectedUnits()) {
+    const command = { type: 'GATHER', unit: u.id };
+    if (blocks.length) {
+      command.blocks = blocks;
+      command.x = target.x;
+      command.z = target.z;
+    }
+    send(command, blocks.length
+      ? unitName(u) + ' wydobywa w chunku: ' + blocks.join(', ')
+      : unitName(u) + ' zbiera przedmioty z ziemi');
+  }
+});
+els.gatherBlocks.addEventListener('input', updateControls);
+els.scoutBtn.addEventListener('click', () => {
+  let target = state.pin;
+  if (!target && state.area) {
+    const area = state.area;
+    const cx = Math.floor(area.x1 / CHUNK), cz = Math.floor(area.z1 / CHUNK);
+    if (Math.floor(area.x2 / CHUNK) === cx && Math.floor(area.z2 / CHUNK) === cz) {
+      target = { x: cx * CHUNK + 8, z: cz * CHUNK + 8 };
+    }
+  }
+  if (!target) { log('err', 'Wskaż chunk narzędziem Zwiad/Chunk albo punktem na mapie.'); return; }
+  for (const u of selectedUnits()) {
+    send({ type: 'SCOUT', unit: u.id, x: target.x, z: target.z },
+      unitName(u) + ' bada chunk ' + Math.floor(target.x / CHUNK) + ', ' + Math.floor(target.z / CHUNK));
+  }
 });
 els.attackBtn.addEventListener('click', () => {
   const target = els.target.value.trim();
@@ -1081,6 +1396,9 @@ els.attackBtn.addEventListener('click', () => {
 els.stopBtn.addEventListener('click', () => {
   for (const u of selectedUnits()) send({ type: 'STOP', unit: u.id }, unitName(u) + ' stoi');
 });
+els.clearCommandQueue.addEventListener('click', () => {
+  clearQueuedCommands(Array.from(state.selected));
+});
 
 function updateControls() {
   const on = connected();
@@ -1090,10 +1408,21 @@ function updateControls() {
     : 'Zaznaczono ' + n + ' ' + plural(n, 'jednostkę', 'jednostki', 'jednostek') + '.';
   els.selectAll.disabled = state.units.size === 0;
   els.selectNone.disabled = n === 0;
+  renderCommandQueue();
 
   const okArea = !!state.area && areaValid(state.area);
   els.harvestBtn.disabled = !(on && n > 0 && okArea);
-  els.gatherBtn.disabled = !(on && n > 0);
+  const gatherBlocks = els.gatherBlocks.value.split(',').some((id) => id.trim());
+  const areaIsSingleChunk = !!state.area
+    && Math.floor(state.area.x1 / CHUNK) === Math.floor(state.area.x2 / CHUNK)
+    && Math.floor(state.area.z1 / CHUNK) === Math.floor(state.area.z2 / CHUNK);
+  els.gatherBtn.disabled = !(on && n > 0 && (!gatherBlocks || !!state.pin || areaIsSingleChunk));
+  const scoutTargetReady = !!state.pin || areaIsSingleChunk;
+  els.scoutBtn.disabled = !(on && n > 0 && scoutTargetReady);
+  els.scoutHint.textContent = !on ? 'Najpierw połącz się z modem.'
+    : n === 0 ? 'Zaznacz jednostkę.'
+      : scoutTargetReady ? 'Wykona patrol i po około minucie poda liczbę rud oraz kłód według rodzaju.'
+        : 'Zaznacz jeden chunk narzędziem Chunk albo wskaż punkt na mapie.';
   els.attackBtn.disabled = !(on && n > 0);
   els.stopBtn.disabled = !(on && n > 0);
   els.craftBtn.disabled = !(on && n > 0);
@@ -1110,6 +1439,9 @@ function updateControls() {
   const structureReady = on && n > 0 && !!structureName && !!state.pin;
   els.structureCheckBtn.disabled = !structureReady;
   els.structureBuildBtn.disabled = !structureReady;
+  els.structureMaterialsPlayer.disabled = !on || state.players.length === 0;
+  els.structureMaterialsBtn.disabled = !(on && !!structureName && !!state.pin
+    && !!els.structureMaterialsPlayer.value);
   let buildHint = '';
   if (!on) buildHint = 'Najpierw połącz się z modem.';
   else if (n === 0) buildHint = 'Zaznacz jednostki.';
@@ -1644,7 +1976,7 @@ function draw() {
   drawTerrain();
   drawGrid();
 
-  if (state.tool === 'chunk' && state.hoverWorld && !state.drag) {
+  if ((state.tool === 'chunk' || state.tool === 'scout') && state.hoverWorld && !state.drag) {
     const cx = Math.floor(state.hoverWorld.x / CHUNK) * CHUNK, cz = Math.floor(state.hoverWorld.z / CHUNK) * CHUNK;
     ctx.fillStyle = 'rgba(217, 169, 52, 0.22)';
     ctx.fillRect(wx(cx), wz(cz), CHUNK * state.view.scale, CHUNK * state.view.scale);
@@ -1704,7 +2036,7 @@ els.canvas.addEventListener('pointerdown', (e) => {
   }
   if (e.button !== 0) return;
 
-  if (state.tool === 'chunk') {
+  if (state.tool === 'chunk' || state.tool === 'scout') {
     setArea(areaFromPoints(w, w, true));
     return;
   }
@@ -1743,7 +2075,7 @@ els.canvas.addEventListener('pointermove', (e) => {
   } else if (d && d.kind === 'rect') {
     d.cur = w;
     if (Math.hypot(p.x - d.sx, p.y - d.sy) > 4) d.moved = true;
-  } else if (state.tool !== 'chunk') {
+  } else if (state.tool !== 'chunk' && state.tool !== 'scout') {
     return;
   }
   scheduleDraw();
@@ -1809,7 +2141,7 @@ window.addEventListener('blur', () => { state.space = false; });
 
 els.connectBtn.addEventListener('click', () => { if (state.wantConnected) disconnect(); else connect(); });
 els.url.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !state.wantConnected) connect(); });
-for (const k of ['craftItem', 'craftPlace', 'withdrawItem']) {
+for (const k of ['craftItem', 'withdrawItem']) {
   els[k].addEventListener('change', savePrefs);
 }
 for (const k of ['what', 'natural', 'fell', 'split', 'snap', 'showTerrain']) {

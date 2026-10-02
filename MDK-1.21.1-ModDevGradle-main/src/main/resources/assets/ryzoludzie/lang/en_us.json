@@ -12,6 +12,7 @@
   "examplemod.configuration.magicNumber": "Magic Number",
 
   "entity.ryzoludzie.riceman": "Riceman",
-  "item.ryzoludzie.riceman_spawn_egg": "Riceman Spawn Egg"
+  "item.ryzoludzie.riceman_spawn_egg": "Riceman Spawn Egg",
+  "block.ryzoludzie.mine_marker": "Mine Marker"
 
 }

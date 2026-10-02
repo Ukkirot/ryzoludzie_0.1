@@ -10,6 +10,7 @@ import com.ukkirot.ryzoludzie.entity.HarvestArea;
 import com.ukkirot.ryzoludzie.entity.RiceManEntity;
 import com.ukkirot.ryzoludzie.registry.ModEntities;
 import com.ukkirot.ryzoludzie.structure.StructureLoader;
+import com.ukkirot.ryzoludzie.structure.MineMarker;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -21,6 +22,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -30,6 +32,8 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
@@ -43,7 +47,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -56,20 +63,25 @@ import java.util.UUID;
  * <p>
  * Obsługiwane komendy (pole "type"; opcjonalne "requestId" jest odsyłane w odpowiedzi):
  * <pre>
- * {"type":"GET_STATE"}                                            (jednostki + gracze)
+ * {"type":"GET_STATE"}                                            (jednostki + gracze + niepotwierdzone events)
+ *   komendy jednostki przyjmują opcjonalne "commandId"; odpowiedź zawiera status "ACCEPTED",
+ *   a wynik końcowy (SUCCEEDED/FAILED/CANCELLED) wraca jako event do czasu ACK_EVENTS
  * {"type":"GET_TERRAIN","chunks":[[cx,cz],...]}                     (maks. 64 chunków; kolory i wysokości powierzchni)
  * {"type":"SPAWN","x":100,"z":100[,"y":70]}                        (overworld; bez "y" na powierzchni terenu)
  * {"type":"MOVE","unit":"&lt;uuid&gt;","x":..,"z":..[,"y":..]}            (bez "y" na powierzchni terenu)
  * {"type":"ATTACK","unit":"&lt;uuid&gt;","target":"&lt;uuid | nick gracza | nearest:minecraft:pig&gt;"}
- * {"type":"GATHER","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..]}
+ * {"type":"GATHER","unit":"&lt;uuid&gt;"[,"x":..,"z":..,"blocks":["minecraft:iron_ore",...]]}
+ *   bez "blocks" zbiera leżące przedmioty; z listą wydobywa wskazane bloki w chunku;
+ *   wariant wydobywania wymaga ryzoludzie:mine_marker w chunku i najpierw kieruje jednostkę do znacznika
+ * {"type":"SCOUT","unit":"&lt;uuid&gt;","x":..,"z":..}            (zwiad chunku, po ok. minucie raportuje rudy i kłody)
  * {"type":"HARVEST","unit":"&lt;uuid&gt;","chunkX":..,"chunkZ":..}                (cały chunk)
  * {"type":"HARVEST","unit":"&lt;uuid&gt;","x1":..,"z1":..,"x2":..,"z2":..}       (prostokąt; opcjonalnie "y1","y2")
  * {"type":"HARVEST","unit":"&lt;uuid&gt;"[,"x":..,"y":..,"z":..][,"radius":12]}  (kwadrat wokół punktu / jednostki)
  *   opcje: "what":"logs|crops|all", "natural_only":true, "fell":true
  *   obszar maks. 64x64 bloków; bez "y1","y2" zakres wysokości liczy się z mapy terenu (chunki muszą być załadowane)
- * {"type":"CRAFT","unit":"&lt;uuid&gt;","item":"minecraft:chest"[,"count":1][,"place":true[,"x":..,"z":..[,"y":..]]]}
- *   wytwarza przedmiot z tego, co ma w ekwipunku (deski, patyki i stół rzemieślniczy robi sam);
- *   "place":true stawia gotowy blok w podanym miejscu albo w wolnym miejscu obok
+ * {"type":"CRAFT","unit":"&lt;uuid&gt;","item":"minecraft:chest"[,"recipe":"minecraft:chest"]}
+ *   atomowo wykonuje jeden craft, pobierając składniki z ekwipunku i przypisanego magazynu;
+ *   zwraca jeden wynik receptury. Nie tworzy półproduktów ani nie stawia bloku (użyj PLACE).
  * {"type":"PLACE","unit":"&lt;uuid&gt;","item":"minecraft:chest"[,"x":..,"z":..[,"y":..]]}
  * {"type":"SET_STORAGE","unit":"&lt;uuid&gt;","x":..,"z":..[,"y":..]}   (przypisuje magazyn: skrzynię, beczkę itp.)
  * {"type":"SET_STORAGE","unit":"&lt;uuid&gt;","clear":true}            (odpina magazyn)
@@ -77,13 +89,14 @@ import java.util.UUID;
  * {"type":"WITHDRAW","unit":"&lt;uuid&gt;","item":"minecraft:oak_planks"[,"count":64]}
  * {"type":"UPLOAD_STRUCTURE","name":"dom.nbt","data":"&lt;base64&gt;"}   (zapisuje strukturę do folderu ryzoludzie_structures)
  * {"type":"LIST_STRUCTURES"}                                       (lista dostępnych struktur .nbt, z rozmiarem w blokach)
- * {"type":"CHECK_STRUCTURE","unit":"&lt;uuid&gt;","name":"dom.nbt","x":..,"z":..[,"y":..]}
- *   podgląd bez rozkazu: typ drewna dobrany pod biom w (x,y,z), potrzebne materiały i czy
- *   ekwipunek jednostki + jej magazyn (jeśli przypisany) mają ich wystarczająco
- * {"type":"BUILD_STRUCTURE","unit":"&lt;uuid&gt;","name":"dom.nbt","x":..,"z":..[,"y":..]}
- *   jak CHECK_STRUCTURE, ale gdy materiałów starcza: dociąga brakujące z magazynu do ekwipunku
- *   i każe jednostce zbudować strukturę (typ drewna dobrany pod biom w miejscu budowy)
+ * {"type":"CHECK","name":"dom.nbt","x":..,"z":..[,"y":..][,"unit":"&lt;uuid&gt;"]}
+ *   czyste zapytanie: liczba bloków i materiały jeszcze potrzebne po uwzględnieniu istniejącej budowy;
+ *   opcjonalne unit daje kontekst ekwipunku/przypisanego magazynu, ale nie uruchamia komendy
+ * {"type":"BUILD","unit":"&lt;uuid&gt;","name":"dom.nbt","x":..,"z":..[,"y":..]}
+ *   pobiera brakujące materiały z przypisanego magazynu i rozpoczyna budowę
+ * {"type":"CHECK_STRUCTURE",...} / {"type":"BUILD_STRUCTURE",...}   (stare aliasy)
  * {"type":"STOP","unit":"&lt;uuid&gt;"}
+ * {"type":"ACK_EVENTS","eventIds":["&lt;event-id&gt;",...]}       (potwierdza odebrane wyniki komend)
  * </pre>
  */
 public final class RiceManBridge {
@@ -95,32 +108,56 @@ public final class RiceManBridge {
 
     public static JsonObject handle(MinecraftServer server, JsonObject msg) {
         JsonObject response;
+        RiceManEntity commandUnit = null;
+        String commandId = null;
         if (!server.isSameThread()) {
             LOGGER.error("[RiceManBridge] handle() called off the server thread: {}", Thread.currentThread().getName());
             response = error("Internal error: command executed off the server thread");
         } else {
             try {
                 String type = requireString(msg, "type").toUpperCase(Locale.ROOT);
+                if (isUnitCommand(type)) {
+                    commandUnit = requireUnit(server, msg);
+                    if (commandUnit.getCommand() != RiceManEntity.Command.IDLE && !type.equals("MOVE")) {
+                        throw new IllegalArgumentException("UNIT_BUSY: unit already has an active command");
+                    }
+                    commandId = msg.has("commandId") ? requireString(msg, "commandId") : UUID.randomUUID().toString();
+                    if (commandId.isBlank() || commandId.length() > 128) {
+                        throw new IllegalArgumentException("Field 'commandId' must contain 1 to 128 characters");
+                    }
+                }
                 response = switch (type) {
                     case "GET_STATE" -> getState(server);
+                    case "ACK_EVENTS" -> acknowledgeEvents(server, msg);
+                    case "CHECK" -> checkStructure(server, msg, "CHECK");
                     case "GET_TERRAIN" -> terrain(server, msg);
                     case "SPAWN" -> spawn(server, msg);
                     case "MOVE" -> move(server, msg);
                     case "ATTACK" -> attack(server, msg);
                     case "GATHER" -> gather(server, msg);
+                    case "SCOUT" -> scout(server, msg);
                     case "HARVEST" -> harvest(server, msg);
-                    case "CRAFT" -> craft(server, msg);
+                    case "CRAFT" -> craft(server, msg, commandId);
                     case "PLACE" -> place(server, msg);
                     case "SET_STORAGE" -> setStorage(server, msg);
                     case "DEPOSIT" -> deposit(server, msg);
                     case "WITHDRAW" -> withdraw(server, msg);
                     case "UPLOAD_STRUCTURE" -> uploadStructure(server, msg);
                     case "LIST_STRUCTURES" -> listStructures(server);
-                    case "CHECK_STRUCTURE" -> checkStructure(server, msg);
-                    case "BUILD_STRUCTURE" -> buildStructure(server, msg);
+                    case "GIVE_BUILD_MATERIALS" -> giveBuildMaterials(server, msg);
+                    case "CHECK_STRUCTURE" -> checkStructure(server, msg, "CHECK_STRUCTURE");
+                    case "BUILD" -> buildStructure(server, msg, "BUILD");
+                    case "BUILD_STRUCTURE" -> buildStructure(server, msg, "BUILD_STRUCTURE");
                     case "STOP" -> stop(server, msg);
                     default -> throw new IllegalArgumentException("Unknown command type: " + type);
                 };
+                if (commandUnit != null && !type.equals("CRAFT")
+                        && response.has("ok") && response.get("ok").getAsBoolean()) {
+                    commandUnit.setActiveCommandId(commandId, typeName(type));
+                    response.addProperty("commandId", commandId);
+                    response.addProperty("status", "ACCEPTED");
+                    response.addProperty("command", typeName(type));
+                }
             } catch (IllegalArgumentException e) {
                 response = error(e.getMessage());
             } catch (RuntimeException e) {
@@ -136,12 +173,47 @@ public final class RiceManBridge {
 
     // ---------------------------------------------------------------- komendy
 
+    private static boolean isUnitCommand(String type) {
+        return switch (type) {
+            case "MOVE", "ATTACK", "GATHER", "SCOUT", "HARVEST", "CRAFT", "PLACE", "DEPOSIT", "WITHDRAW",
+                    "BUILD", "BUILD_STRUCTURE" -> true;
+            default -> false;
+        };
+    }
+
+    private static String typeName(String type) {
+        return type.equals("BUILD_STRUCTURE") ? "BUILD" : type;
+    }
+
     private static JsonObject getState(MinecraftServer server) {
         JsonArray units = new JsonArray();
+        JsonArray events = new JsonArray();
         for (ServerLevel level : server.getAllLevels()) {
             for (Entity e : level.getAllEntities()) {
                 if (e instanceof RiceManEntity r && r.isAlive()) {
                     units.add(describe(r));
+                    for (RiceManEntity.CommandResult result : r.getCommandResults()) {
+                        JsonObject event = new JsonObject();
+                        event.addProperty("type", "COMMAND_RESULT");
+                        event.addProperty("eventId", result.eventId());
+                        event.addProperty("commandId", result.commandId());
+                        event.addProperty("unit", r.getUUID().toString());
+                        event.addProperty("command", result.command());
+                        event.addProperty("status", result.status());
+                        if (result.reasonCode() != null) {
+                            event.addProperty("reasonCode", result.reasonCode());
+                        }
+                        if (result.reasonMessage() != null) {
+                            event.addProperty("reasonMessage", result.reasonMessage());
+                        }
+                        if (result.resultItem() != null) {
+                            JsonObject craftResult = new JsonObject();
+                            craftResult.addProperty("item", result.resultItem());
+                            craftResult.addProperty("count", result.resultCount());
+                            event.add("result", craftResult);
+                        }
+                        events.add(event);
+                    }
                 }
             }
         }
@@ -159,8 +231,31 @@ public final class RiceManBridge {
         JsonObject res = ok("STATE");
         res.addProperty("gameTime", server.overworld().getGameTime());
         res.add("units", units);
+        res.add("events", events);
         res.add("players", players);
         return res;
+    }
+
+    private static JsonObject acknowledgeEvents(MinecraftServer server, JsonObject msg) {
+        JsonElement raw = msg.get("eventIds");
+        if (raw == null || !raw.isJsonArray()) {
+            throw new IllegalArgumentException("Field 'eventIds' must be an array");
+        }
+        List<String> eventIds = new ArrayList<>();
+        for (JsonElement id : raw.getAsJsonArray()) {
+            if (!id.isJsonPrimitive() || !id.getAsJsonPrimitive().isString()) {
+                throw new IllegalArgumentException("Each eventId must be a string");
+            }
+            eventIds.add(id.getAsString());
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity instanceof RiceManEntity unit) {
+                    unit.acknowledgeCommandResults(eventIds);
+                }
+            }
+        }
+        return ok("EVENTS_ACKED");
     }
 
     // ---------------------------------------------------------------- teren
@@ -288,7 +383,11 @@ public final class RiceManBridge {
         if (!(unit.level() instanceof ServerLevel level)) {
             throw new IllegalArgumentException("Unit is not in a server level");
         }
-        unit.commandMoveTo(posOrSurface(level, msg));
+        BlockPos target = posOrSurface(level, msg);
+        if (unit.getCommand() != RiceManEntity.Command.IDLE) {
+            unit.cancelCommand("PREEMPTED_BY_MOVE", "przerwano przez nadrzędną komendę MOVE");
+        }
+        unit.commandMoveTo(target);
         return ack("MOVE", unit);
     }
 
@@ -314,8 +413,121 @@ public final class RiceManBridge {
 
     private static JsonObject gather(MinecraftServer server, JsonObject msg) {
         RiceManEntity unit = requireUnit(server, msg);
-        unit.commandGather(hasPos(msg) ? requirePos(msg) : null);
-        return ack("GATHER", unit);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        if (msg.has("x") != msg.has("z")) {
+            throw new IllegalArgumentException("GATHER requires both 'x' and 'z'");
+        }
+        BlockPos center = msg.has("x")
+                ? posOrSurface(level, msg) : unit.blockPosition();
+        List<Block> blocks = parseGatherBlocks(msg);
+        int chunkX = center.getX() >> 4;
+        int chunkZ = center.getZ() >> 4;
+        List<BlockPos> positions = parseGatherPositions(msg, chunkX, chunkZ);
+        if (!positions.isEmpty() && blocks.isEmpty()) {
+            throw new IllegalArgumentException("GATHER with explicit targets also requires 'blocks'");
+        }
+        BlockPos marker = blocks.isEmpty() ? null : MineMarker.findInChunk(level, chunkX, chunkZ);
+        if (!blocks.isEmpty() && marker == null) {
+            throw new IllegalArgumentException("GATHER with block targets requires a Mine Marker in chunk "
+                    + chunkX + ", " + chunkZ);
+        }
+
+        unit.commandGather(center, blocks, positions);
+        JsonObject response = ack("GATHER", unit);
+        response.addProperty("chunkX", chunkX);
+        response.addProperty("chunkZ", chunkZ);
+        response.addProperty("targetCount", positions.size());
+        if (marker != null) {
+            response.addProperty("markerX", marker.getX());
+            response.addProperty("markerY", marker.getY());
+            response.addProperty("markerZ", marker.getZ());
+        }
+        JsonArray blockIds = new JsonArray();
+        blocks.forEach(block -> blockIds.add(BuiltInRegistries.BLOCK.getKey(block).toString()));
+        response.add("blocks", blockIds);
+        return response;
+    }
+
+    private static JsonObject scout(MinecraftServer server, JsonObject msg) {
+        RiceManEntity unit = requireUnit(server, msg);
+        if (!(unit.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Unit is not in a server level");
+        }
+        if (!msg.has("x") || !msg.has("z")) {
+            throw new IllegalArgumentException("SCOUT requires both 'x' and 'z' to select a chunk");
+        }
+        BlockPos selected = posOrSurface(level, msg);
+        int chunkX = selected.getX() >> 4;
+        int chunkZ = selected.getZ() >> 4;
+        int x = (chunkX << 4) + 8;
+        int z = (chunkZ << 4) + 8;
+        BlockPos center = new BlockPos(x, selected.getY(), z);
+        unit.commandScout(center);
+        JsonObject response = ack("SCOUT", unit);
+        response.addProperty("chunkX", chunkX);
+        response.addProperty("chunkZ", chunkZ);
+        return response;
+    }
+
+    private static List<Block> parseGatherBlocks(JsonObject msg) {
+        if (!msg.has("blocks")) {
+            return List.of();
+        }
+        JsonElement raw = msg.get("blocks");
+        if (raw == null || !raw.isJsonArray()) {
+            throw new IllegalArgumentException("Field 'blocks' must be an array of block IDs");
+        }
+        JsonArray values = raw.getAsJsonArray();
+        if (values.isEmpty() || values.size() > 16) {
+            throw new IllegalArgumentException("GATHER requires between 1 and 16 block IDs");
+        }
+        List<Block> blocks = new ArrayList<>();
+        for (JsonElement value : values) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+                throw new IllegalArgumentException("Each GATHER block ID must be a string");
+            }
+            String rawId = value.getAsString().trim();
+            ResourceLocation id = ResourceLocation.tryParse(
+                    rawId.contains(":") ? rawId : "minecraft:" + rawId);
+            if (id == null) {
+                throw new IllegalArgumentException("Invalid GATHER block ID: " + value.getAsString());
+            }
+            Block block = BuiltInRegistries.BLOCK.getOptional(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown GATHER block: " + id));
+            if (block == Blocks.AIR || blocks.contains(block)) {
+                throw new IllegalArgumentException("Invalid or duplicate GATHER block: " + id);
+            }
+            blocks.add(block);
+        }
+        return List.copyOf(blocks);
+    }
+
+    private static List<BlockPos> parseGatherPositions(JsonObject msg, int chunkX, int chunkZ) {
+        if (!msg.has("targets")) {
+            return List.of();
+        }
+        JsonElement raw = msg.get("targets");
+        if (raw == null || !raw.isJsonArray() || raw.getAsJsonArray().isEmpty()
+                || raw.getAsJsonArray().size() > 256) {
+            throw new IllegalArgumentException("Field 'targets' must be a non-empty array of at most 256 positions");
+        }
+        List<BlockPos> positions = new ArrayList<>();
+        for (JsonElement element : raw.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException("Each GATHER target must be an object with x, y and z");
+            }
+            JsonObject target = element.getAsJsonObject();
+            BlockPos pos = requirePos(target);
+            if ((pos.getX() >> 4) != chunkX || (pos.getZ() >> 4) != chunkZ) {
+                throw new IllegalArgumentException("Every GATHER target must be in the selected chunk");
+            }
+            if (!positions.contains(pos)) {
+                positions.add(pos.immutable());
+            }
+        }
+        return List.copyOf(positions);
     }
 
     private static final int DEFAULT_RADIUS = 12;
@@ -437,36 +649,63 @@ public final class RiceManBridge {
         };
     }
 
-    private static JsonObject craft(MinecraftServer server, JsonObject msg) {
+    private static JsonObject craft(MinecraftServer server, JsonObject msg, @Nullable String commandId) {
         RiceManEntity unit = requireUnit(server, msg);
         if (!(unit.level() instanceof ServerLevel level)) {
             throw new IllegalArgumentException("Unit is not in a server level");
         }
         Item item = requireItem(msg, "item");
-        int count = msg.has("count") ? requireInt(msg, "count") : 1;
-        if (count < 1 || count > 64) {
-            throw new IllegalArgumentException("Field 'count' must be between 1 and 64");
+        if (msg.has("count") && requireInt(msg, "count") != 1) {
+            throw new IllegalArgumentException("CRAFT creates exactly one recipe result; omit 'count' or use 1");
         }
-        boolean place = optionalBoolean(msg, "place", false);
-        if (place && !(item instanceof BlockItem)) {
-            throw new IllegalArgumentException(itemName(item) + " is not a block and cannot be placed");
+        if (optionalBoolean(msg, "place", false)) {
+            throw new IllegalArgumentException("CRAFT does not place blocks; use PLACE as a separate command");
         }
-        BlockPos placeAt = (place && msg.has("x") && msg.has("z")) ? posOrSurface(level, msg) : null;
+        ResourceLocation recipeId = null;
+        if (msg.has("recipe")) {
+            String rawRecipe = requireString(msg, "recipe").trim();
+            recipeId = ResourceLocation.tryParse(rawRecipe.contains(":") ? rawRecipe : "minecraft:" + rawRecipe);
+            if (recipeId == null) {
+                throw new IllegalArgumentException("Bad recipe id: " + rawRecipe);
+            }
+        }
 
-        RiceCrafter.Plan plan = RiceCrafter.plan(unit, level, item, count);
-        if (!plan.ok) {
-            throw new IllegalArgumentException("Cannot craft " + itemName(item) + ": missing "
-                    + (plan.missing != null ? itemName(plan.missing) : "ingredients"));
+        RiceCrafter.CraftOutcome outcome;
+        BlockPos storagePos = unit.getStorageChest();
+        Container storage = storageContainerOf(unit);
+        outcome = RiceCrafter.craftOnce(unit, level, item, recipeId, storage);
+        if (storagePos != null && storage == null && !outcome.success()
+                && outcome.code().equals("MISSING_INGREDIENTS")) {
+            outcome = new RiceCrafter.CraftOutcome(false, null, 0, outcome.missing(), "STORAGE_UNAVAILABLE",
+                    "Brakuje składników, a przypisany magazyn jest niezaładowany albo nie zawiera już pojemnika");
+        } else if (storagePos == null && !outcome.success()
+                && outcome.code().equals("MISSING_INGREDIENTS")) {
+            outcome = new RiceCrafter.CraftOutcome(false, null, 0, outcome.missing(), "NO_STORAGE_ASSIGNED",
+                    outcome.message() + ". Jednostka nie ma przypisanego magazynu — wskaż skrzynię narzędziem Magazyn "
+                            + "i kliknij „Ustaw jako magazyn zaznaczonych”");
         }
 
-        unit.commandCraft(item, count, place, placeAt);
+        String id = commandId != null ? commandId : UUID.randomUUID().toString();
+        unit.recordCommandResult(id, "CRAFT", outcome.success() ? "SUCCEEDED" : "FAILED",
+                outcome.success() ? null : outcome.code(),
+                outcome.success() ? null : outcome.message(),
+                outcome.output(), outcome.outputCount());
 
         JsonObject res = ack("CRAFT", unit);
-        JsonArray steps = new JsonArray();
-        for (RiceCrafter.Step step : plan.steps) {
-            steps.add(RiceCrafter.describe(step, level));
+        res.addProperty("commandId", id);
+        res.addProperty("command", "CRAFT");
+        res.addProperty("status", "ACCEPTED");
+        if (!outcome.success()) {
+            res.addProperty("resultStatus", "FAILED");
+            res.addProperty("reasonCode", outcome.code());
+            res.addProperty("reasonMessage", outcome.message());
+        } else {
+            res.addProperty("resultStatus", "SUCCEEDED");
+            JsonObject craftResult = new JsonObject();
+            craftResult.addProperty("item", itemName(item));
+            craftResult.addProperty("count", outcome.outputCount());
+            res.add("result", craftResult);
         }
-        res.add("steps", steps);
         return res;
     }
 
@@ -513,19 +752,25 @@ public final class RiceManBridge {
             throw new IllegalArgumentException("Unit is not in a server level");
         }
         BlockPos pos = posOrSurface(level, msg);
-        if (!msg.has("y") && !(level.getBlockEntity(pos) instanceof Container)) {
+        if (!msg.has("y") && ContainerTransfer.containerAt(level, pos) == null) {
             // Bez podanego "y" pos to wolne miejsce NAD najwyższym blokiem (dobre do stanięcia).
             // Skrzynia to właśnie ten najwyższy blok, więc sprawdzamy też jedno niżej.
             BlockPos below = pos.below();
-            if (level.getBlockEntity(below) instanceof Container) {
+            if (ContainerTransfer.containerAt(level, below) != null) {
                 pos = below;
             }
         }
-        if (!(level.getBlockEntity(pos) instanceof Container)) {
+        if (ContainerTransfer.containerAt(level, pos) == null) {
             throw new IllegalArgumentException("There is no container at that position");
         }
         unit.setStorageChest(pos);
-        return ack("SET_STORAGE", unit);
+        JsonObject response = ack("SET_STORAGE", unit);
+        JsonObject storage = new JsonObject();
+        storage.addProperty("x", pos.getX());
+        storage.addProperty("y", pos.getY());
+        storage.addProperty("z", pos.getZ());
+        response.add("storage", storage);
+        return response;
     }
 
     private static JsonObject deposit(MinecraftServer server, JsonObject msg) {
@@ -674,42 +919,54 @@ public final class RiceManBridge {
         return name;
     }
 
-    private static JsonObject checkStructure(MinecraftServer server, JsonObject msg) {
-        RiceManEntity unit = requireUnit(server, msg);
-        if (!(unit.level() instanceof ServerLevel level)) {
-            throw new IllegalArgumentException("Unit is not in a server level");
-        }
+    private static JsonObject checkStructure(MinecraftServer server, JsonObject msg, String responseType) {
+        RiceManEntity unit = msg.has("unit") ? requireUnit(server, msg) : null;
+        ServerLevel level = unit != null && unit.level() instanceof ServerLevel unitLevel
+                ? unitLevel : server.overworld();
         String name = requireString(msg, "name");
         BlockPos origin = posOrSurface(level, msg);
         StructureLoader.LoadResult loaded = StructureLoader.load(server, name, level, origin);
+        BuildRequirements requirements = buildRequirements(level, loaded);
+        Map<Item, Integer> needed = requirements.materials();
 
-        Container storage = storageContainerOf(unit);
-        Map<Item, Integer> have = ContainerTransfer.stockOf(unit.getInventory());
+        Container storage = unit != null ? storageContainerOf(unit) : null;
+        boolean storageAvailable = unit == null || unit.getStorageChest() == null || storage != null;
+        Map<Item, Integer> have = unit != null
+                ? ContainerTransfer.stockOf(unit.getInventory()) : Map.of();
         Map<Item, Integer> storageStock = storage != null ? ContainerTransfer.stockOf(storage) : Map.<Item, Integer>of();
 
         JsonArray materials = new JsonArray();
         boolean materialsOk = true;
-        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
-            int total = have.getOrDefault(need.getKey(), 0) + storageStock.getOrDefault(need.getKey(), 0);
+        for (Map.Entry<Item, Integer> need : needed.entrySet()) {
+            int inventoryCount = have.getOrDefault(need.getKey(), 0);
+            int storageCount = storageStock.getOrDefault(need.getKey(), 0);
+            int total = inventoryCount + storageCount;
             boolean enough = total >= need.getValue();
             materialsOk &= enough;
             JsonObject m = new JsonObject();
             m.addProperty("item", itemName(need.getKey()));
             m.addProperty("needed", need.getValue());
             m.addProperty("have", total);
+            m.addProperty("inventory", inventoryCount);
+            m.addProperty("storage", storageCount);
+            m.addProperty("missing", Math.max(0, need.getValue() - total));
             m.addProperty("ok", enough);
             materials.add(m);
         }
 
-        JsonObject res = ok("CHECK_STRUCTURE");
+        JsonObject res = ok(responseType);
+        res.addProperty("operation", "BUILD");
+        res.addProperty("ready", materialsOk);
         res.add("size", sizeArray(loaded.size()));
-        res.addProperty("blocks", loaded.blocks().size());
+        res.addProperty("blocks", requirements.blocksToPlace());
+        res.addProperty("blocksToPlace", requirements.blocksToPlace());
         res.addProperty("materialsOk", materialsOk);
+        res.addProperty("storageAvailable", storageAvailable);
         res.add("materials", materials);
         return res;
     }
 
-    private static JsonObject buildStructure(MinecraftServer server, JsonObject msg) {
+    private static JsonObject buildStructure(MinecraftServer server, JsonObject msg, String responseType) {
         RiceManEntity unit = requireUnit(server, msg);
         if (!(unit.level() instanceof ServerLevel level)) {
             throw new IllegalArgumentException("Unit is not in a server level");
@@ -717,12 +974,17 @@ public final class RiceManBridge {
         String name = requireString(msg, "name");
         BlockPos origin = posOrSurface(level, msg);
         StructureLoader.LoadResult loaded = StructureLoader.load(server, name, level, origin);
+        BuildRequirements requirements = buildRequirements(level, loaded);
+        Map<Item, Integer> needed = requirements.materials();
 
         Container storage = storageContainerOf(unit);
+        if (unit.getStorageChest() != null && storage == null) {
+            throw new IllegalArgumentException("Assigned storage is not loaded or no longer contains a container");
+        }
         Map<Item, Integer> have = ContainerTransfer.stockOf(unit.getInventory());
         Map<Item, Integer> storageStock = storage != null ? ContainerTransfer.stockOf(storage) : Map.<Item, Integer>of();
 
-        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
+        for (Map.Entry<Item, Integer> need : needed.entrySet()) {
             int total = have.getOrDefault(need.getKey(), 0) + storageStock.getOrDefault(need.getKey(), 0);
             if (total < need.getValue()) {
                 throw new IllegalArgumentException("Cannot build " + name + ": missing "
@@ -730,38 +992,97 @@ public final class RiceManBridge {
             }
         }
 
-        // Dociągnij z magazynu to, czego brakuje we własnym ekwipunku - jednorazowo, przed startem budowy.
-        if (storage != null) {
-            for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
-                int deficit = need.getValue() - have.getOrDefault(need.getKey(), 0);
-                if (deficit <= 0) {
-                    continue;
-                }
-                ItemStack taken = ContainerTransfer.takeUpTo(storage, need.getKey(), deficit);
-                if (taken.isEmpty()) {
-                    continue;
-                }
-                ItemStack left = unit.getInventory().addItem(taken);
-                if (!left.isEmpty()) {
-                    ContainerTransfer.mergeInto(storage, left); // ekwipunek pełny, reszta wraca do magazynu
-                }
-            }
-        }
-
-        Map<Item, Integer> haveNow = ContainerTransfer.stockOf(unit.getInventory());
-        for (Map.Entry<Item, Integer> need : loaded.materials().entrySet()) {
-            if (haveNow.getOrDefault(need.getKey(), 0) < need.getValue()) {
-                throw new IllegalArgumentException("Cannot build " + name
-                        + ": not enough room in the unit's inventory to carry all materials");
-            }
-        }
-
         unit.commandBuild(name, origin);
 
-        JsonObject res = ack("BUILD_STRUCTURE", unit);
+        JsonObject res = ack(responseType, unit);
         res.add("size", sizeArray(loaded.size()));
-        res.addProperty("blocks", loaded.blocks().size());
+        res.addProperty("blocks", requirements.blocksToPlace());
+        res.addProperty("blocksToPlace", requirements.blocksToPlace());
         return res;
+    }
+
+    private static JsonObject giveBuildMaterials(MinecraftServer server, JsonObject msg) {
+        String playerName = requireString(msg, "player");
+        ServerPlayer player = server.getPlayerList().getPlayerByName(playerName);
+        if (player == null) {
+            throw new IllegalArgumentException("Player is not online: " + playerName);
+        }
+        if (!(player.level() instanceof ServerLevel level)) {
+            throw new IllegalArgumentException("Player is not in a server level");
+        }
+
+        String name = requireString(msg, "name");
+        BlockPos origin = posOrSurface(level, msg);
+        StructureLoader.LoadResult loaded = StructureLoader.load(server, name, level, origin);
+        BuildRequirements requirements = buildRequirements(level, loaded);
+        Container inventory = player.getInventory();
+        SimpleContainer projectedInventory = new SimpleContainer(inventory.getContainerSize());
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            projectedInventory.setItem(i, inventory.getItem(i).copy());
+        }
+
+        for (Map.Entry<Item, Integer> material : requirements.materials().entrySet()) {
+            int remaining = material.getValue();
+            int stackSize = material.getKey().getDefaultMaxStackSize();
+            while (remaining > 0) {
+                int count = Math.min(remaining, stackSize);
+                ItemStack stack = new ItemStack(material.getKey(), count);
+                if (!ContainerTransfer.mergeInto(projectedInventory, stack).isEmpty()) {
+                    throw new IllegalArgumentException("Not enough inventory space for all build materials");
+                }
+                remaining -= count;
+            }
+        }
+
+        JsonArray materials = new JsonArray();
+        for (Map.Entry<Item, Integer> material : requirements.materials().entrySet()) {
+            int remaining = material.getValue();
+            int stackSize = material.getKey().getDefaultMaxStackSize();
+            while (remaining > 0) {
+                int count = Math.min(remaining, stackSize);
+                ItemStack leftover = ContainerTransfer.mergeInto(inventory,
+                        new ItemStack(material.getKey(), count));
+                if (!leftover.isEmpty()) {
+                    throw new IllegalStateException("Could not add all build materials to player inventory: "
+                            + itemName(material.getKey()));
+                }
+                remaining -= count;
+            }
+            JsonObject entry = new JsonObject();
+            entry.addProperty("item", itemName(material.getKey()));
+            entry.addProperty("count", material.getValue());
+            materials.add(entry);
+        }
+
+        JsonObject response = ok("GIVE_BUILD_MATERIALS");
+        response.addProperty("player", player.getGameProfile().getName());
+        response.addProperty("name", name);
+        response.add("size", sizeArray(loaded.size()));
+        response.addProperty("blocks", requirements.blocksToPlace());
+        response.add("materials", materials);
+        return response;
+    }
+
+    private record BuildRequirements(Map<Item, Integer> materials, int blocksToPlace) {
+    }
+
+    private static BuildRequirements buildRequirements(ServerLevel level, StructureLoader.LoadResult loaded) {
+        Map<Item, Integer> materials = new HashMap<>();
+        int blocksToPlace = 0;
+        for (StructureLoader.PlacementBlock block : loaded.blocks()) {
+            if (!level.isLoaded(block.worldPos())) {
+                throw new IllegalArgumentException("Structure area is not fully loaded at " + block.worldPos());
+            }
+            if (level.getBlockState(block.worldPos()).equals(block.state())) {
+                continue;
+            }
+            blocksToPlace++;
+            Item item = block.state().getBlock().asItem();
+            if (item != Items.AIR) {
+                materials.merge(item, 1, Integer::sum);
+            }
+        }
+        return new BuildRequirements(materials, blocksToPlace);
     }
 
     @Nullable
@@ -770,7 +1091,7 @@ public final class RiceManBridge {
         if (chest == null || !(unit.level() instanceof ServerLevel level) || !level.isLoaded(chest)) {
             return null;
         }
-        return level.getBlockEntity(chest) instanceof Container c ? c : null;
+        return ContainerTransfer.containerAt(level, chest);
     }
 
     // ---------------------------------------------------------------- wyszukiwanie
@@ -853,9 +1174,6 @@ public final class RiceManBridge {
             s.addProperty("y", storage.getY());
             s.addProperty("z", storage.getZ());
             o.add("storage", s);
-        }
-        if (r.getCommand() == RiceManEntity.Command.CRAFT && r.getCraftItem() != null) {
-            o.addProperty("craft", itemName(r.getCraftItem()));
         }
         if (r.getCommand() == RiceManEntity.Command.PLACE && r.getPlaceItem() != null) {
             o.addProperty("place", itemName(r.getPlaceItem()));

@@ -23,6 +23,9 @@ public final class ModEvents {
         if (event.getTabKey() == CreativeModeTabs.SPAWN_EGGS) {
             event.accept(ModItems.RICEMAN_SPAWN_EGG.get());
         }
+        if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
+            event.accept(RyzoludzieMod.MINE_MARKER_ITEM.get());
+        }
     }
 
     private ModEvents() {

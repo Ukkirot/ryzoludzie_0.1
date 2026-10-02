@@ -130,13 +130,13 @@ public class HarvestBlocksGoal extends Goal {
         }
         HarvestArea area = mob.getHarvestArea();
         if (area == null) {
-            mob.finishCommand();
+            mob.failCommand("INVALID_COMMAND", "brak obszaru zbierania");
             return;
         }
         if (!level.getGameRules().getBoolean(GameRules.RULE_MOBGRIEFING)) {
-            mob.setNotice("warn", "zbieranie przerwane: gamerule mobGriefing jest wyłączony");
+            String reason = "zbieranie przerwane: gamerule mobGriefing jest wyłączony";
             RyzoludzieMod.LOGGER.warn("[Ryzoludzie] HARVEST przerwany: gamerule mobGriefing jest wylaczony");
-            mob.finishCommand();
+            mob.failCommand("MOB_GRIEFING_DISABLED", reason);
             return;
         }
 

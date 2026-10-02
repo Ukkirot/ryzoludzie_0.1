@@ -1,8 +1,13 @@
 package com.ukkirot.ryzoludzie.entity;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -10,6 +15,19 @@ import java.util.Map;
 /** Przenoszenie przedmiotów między ekwipunkiem jednostki a dowolnym Containerem (skrzynia, beczka, ...). */
 public final class ContainerTransfer {
     private ContainerTransfer() {
+    }
+
+    /** Resolves a block container, combining both halves of a double chest. */
+    public static Container containerAt(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (state.getBlock() instanceof ChestBlock chestBlock) {
+            Container chest = ChestBlock.getContainer(chestBlock, state, level, pos, true);
+            if (chest != null) {
+                return chest;
+            }
+        }
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        return blockEntity instanceof Container container ? container : null;
     }
 
     /**
